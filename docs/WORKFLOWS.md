@@ -194,19 +194,131 @@ Implementation PRs are monitored for activity to free up slots for active contri
 
 **Why this matters:** Closing abandoned PRs frees up implementation slots so other contributors can attempt the feature.
 
+### Merge Readiness
+
+When configured, the bot automatically manages a `merge-ready` label on implementation PRs. This label signals that a PR meets all technical prerequisites for merging and is safe for maintainers to merge without further checks.
+
+**All five conditions must be true for the label to be added:**
+
+1. PR has the `implementation` label (active competing PR)
+2. At least `minApprovals` approvals from `trustedReviewers`
+3. PR has no merge conflicts (`mergeable` is not `false`)
+4. All GitHub Actions check runs on HEAD are completed with success, neutral, or skipped
+5. All legacy Status API statuses on HEAD are successful (or no statuses exist)
+
+```
+┌─────────────────────┐         ┌─────────────────┐
+│  implementation PR  │ ──────► │  All conditions  │ ──► "merge-ready" label added
+│  (webhook or cron)  │         │  evaluated       │
+└─────────────────────┘         └─────────────────┘
+                                        │
+                                  Condition fails
+                                        │
+                                        ▼
+                                "merge-ready" label removed (if present)
+```
+
+**Evaluation triggers:**
+- **Webhooks:** PR review submitted, check suite completed, status event, label changes
+- **Scheduled reconciliation:** Hourly sweep of all `implementation` PRs to catch missed events and stale labels
+
+**Configuration:**
+
+```yaml
+governance:
+  pr:
+    trustedReviewers:
+      - alice
+      - bob
+    mergeReady:
+      minApprovals: 2
+```
+
+- `trustedReviewers`: list of GitHub usernames whose approvals count toward merge readiness. Also used by the `approval` intake method.
+- `mergeReady.minApprovals`: minimum number of trusted reviewer approvals required. Clamped to `[1, trustedReviewers.length]`. If `trustedReviewers` is empty or `mergeReady` is omitted, the feature is disabled.
+
+### Intake Methods
+
+When a PR links to a `phase:ready-to-implement` issue, the bot determines whether to activate it as an implementation PR. The `intake` configuration controls how this decision is made.
+
+Two methods are available, evaluated in order:
+
+| Method | Behavior |
+|--------|----------|
+| `update` | PR is activated immediately when it links to a ready issue. Only applies to PRs opened or updated after the issue reached `phase:ready-to-implement`. |
+| `approval` | PR is activated when it accumulates `minApprovals` approvals from `trustedReviewers`. This allows PRs opened before voting concluded to qualify later. |
+
+```yaml
+governance:
+  pr:
+    intake:
+      - method: update
+      - method: approval
+        minApprovals: 2
+```
+
+Multiple methods can be configured. A PR is activated by the first method that matches.
+
 ## Automation
 
 | Trigger | Handler | Frequency |
 |---------|---------|-----------|
 | Issue opened | Webhook | Real-time |
 | PR opened | Webhook | Real-time |
+| PR review / check suite / status | Webhook | Real-time |
 | PR merged | Webhook | Real-time |
-| Issue phase transitions | Scheduled script | Every 5 min |
-| Stale PR cleanup | Scheduled script | Every hour |
+| Issue phase transitions | Scheduled script | Daily |
+| Stale PR cleanup | Scheduled script | Every 30 min |
+| PR notification reconciliation | Scheduled script | Every 2 hours |
+| Merge-ready label reconciliation | Scheduled script | Hourly |
+| Daily standup report | Scheduled script | Daily |
 
 ## Configuration
 
-Environment variables for customization:
+### Per-Repo Config (`.github/hivemoot.yml`)
+
+```yaml
+version: 1
+governance:
+  proposals:
+    discussion:
+      exits:
+        - type: auto
+          afterMinutes: 1440
+    voting:
+      exits:
+        - type: auto
+          afterMinutes: 1440
+    extendedVoting:
+      exits:
+        - type: auto
+          afterMinutes: 1440
+  pr:
+    staleDays: 3
+    maxPRsPerIssue: 3
+    trustedReviewers:
+      - alice
+      - bob
+    intake:
+      - method: update
+      - method: approval
+        minApprovals: 2
+    mergeReady:
+      minApprovals: 2
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `governance.proposals.*.exits[].type` | `manual` | Phase transition mode: `manual` or `auto` |
+| `governance.proposals.*.exits[].afterMinutes` | 1440 | Duration before auto-transition (1–43200) |
+| `governance.pr.staleDays` | 3 | Days before stale warning (1–30) |
+| `governance.pr.maxPRsPerIssue` | 3 | Max competing implementations (1–10) |
+| `governance.pr.trustedReviewers` | `[]` | Usernames whose approvals count for intake and merge readiness |
+| `governance.pr.intake` | `[{method: "update"}]` | Ordered list of intake activation methods |
+| `governance.pr.mergeReady` | disabled | Merge-readiness label config; requires `trustedReviewers` |
+| `governance.pr.mergeReady.minApprovals` | 1 | Trusted approvals needed for `merge-ready` label (1–20) |
+
+### Environment Variables (Global Defaults)
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -118,6 +118,15 @@ governance:
   pr:
     staleDays: 3
     maxPRsPerIssue: 3
+    trustedReviewers:
+      - alice
+      - bob
+    intake:
+      - method: update
+      - method: approval
+        minApprovals: 2
+    mergeReady:
+      minApprovals: 2
 ```
 
 ### Environment Variables (Global Defaults)
