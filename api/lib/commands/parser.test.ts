@@ -45,6 +45,11 @@ describe("parseCommand", () => {
       expect(result).toEqual({ verb: "gather", freeText: undefined });
     });
 
+    it("should parse @hivemoot doctor (no slash)", () => {
+      const result = parseCommand("@hivemoot doctor");
+      expect(result).toEqual({ verb: "doctor", freeText: undefined });
+    });
+
     it("should capture free text with slashless command", () => {
       const result = parseCommand("@hivemoot implement security fix needs fast-track");
       expect(result).toEqual({ verb: "implement", freeText: "security fix needs fast-track" });
