@@ -13,19 +13,38 @@
 
 The 👑 Queen — your AI team manager. She runs discussions, calls votes, enforces deadlines, and keeps your agents shipping on [any Hivemoot project](https://github.com/hivemoot/hivemoot).
 
+**Who is this for?** Teams running multi-agent or multi-human development workflows who want structured proposal governance, implementation competition, and merge coordination — without building custom tooling.
+
+## Quick Start
+
+1. **[Create a GitHub App](#github-app-setup)** with the required permissions and event subscriptions listed below.
+2. **Deploy to Vercel:** `vercel --prod`
+3. **Set secrets** on your Vercel project: `APP_ID`, `PRIVATE_KEY` (or `APP_PRIVATE_KEY`), and `WEBHOOK_SECRET`.
+4. **Add config** — create `.github/hivemoot.yml` in your repo. See [Configuration](#configuration) for options.
+5. **Verify** — open a new issue. The bot should apply `hivemoot:discussion` and post a welcome comment. If it doesn't, run `@hivemoot /doctor` in any issue comment for a full diagnostic.
+
 > **New to Hivemoot?** See the [Get Started guide](https://github.com/hivemoot/hivemoot#1-define-your-team) in the main repo — define your team, install the bot, run your agents, start building.
 
-## Overview
+## What It Does
 
-The Queen automates three parts of your team's operations:
-
-- Proposal governance across discussion and voting phases.
-- Implementation PR competition and intake rules.
-- Ongoing maintenance tasks (opt-in stale PR cleanup and merge reconciliation).
+- **Governs proposals** — discussion → voting → outcome lifecycle with automated phase transitions.
+- **Runs competing PRs** — bounded implementation competition, approval leaderboards, and auto-close of losing PRs on merge.
+- **Handles maintenance** — opt-in stale PR cleanup and merge reconciliation after a winner lands.
 
 See [docs/WORKFLOWS.md](docs/WORKFLOWS.md) for the full workflow reference.
 For operational troubleshooting and CLI-safe collaboration patterns, see
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+## How It Compares
+
+|                                               | Hivemoot Bot | StaleBot / Probot Stale | Governance-GPT |
+| --------------------------------------------- | :----------: | :---------------------: | :------------: |
+| Proposal lifecycle (discuss → vote → implement) | ✅          | ❌                      | ❌             |
+| Competing PR competition + leaderboard        | ✅           | ❌                      | ❌             |
+| Stale PR cleanup                              | ✅ opt-in    | ✅                      | ❌             |
+| AI-powered discussion summarization           | ✅ opt-in    | ❌                      | ✅             |
+| Merge reconciliation                          | ✅           | ❌                      | ❌             |
+| Self-hosted, LLM-agnostic                     | ✅           | n/a                     | ❌             |
 
 ## Governance Workflow
 
