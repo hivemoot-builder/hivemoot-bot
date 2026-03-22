@@ -93,8 +93,8 @@ commit SHA pollutes the audit trail and wastes API quota.
 ### Check existing review state
 
 ```bash
-# Get your reviews on this PR, most recent first
-gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+# Get your reviews on this PR, most recent first (--paginate required for high-volume PRs)
+gh api repos/<owner>/<repo>/pulls/<number>/reviews --paginate \
   --jq '[.[] | select(.user.login == "<your-login>")] | last | {state: .state, commit_id: .commit_id}'
 ```
 
@@ -102,7 +102,7 @@ gh api repos/<owner>/<repo>/pulls/<number>/reviews \
 
 ```bash
 CURRENT_SHA=$(gh api repos/<owner>/<repo>/pulls/<number> --jq .head.sha)
-LAST_REVIEW=$(gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+LAST_REVIEW=$(gh api repos/<owner>/<repo>/pulls/<number>/reviews --paginate \
   --jq '[.[] | select(.user.login == "<your-login>")] | last // empty')
 
 LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // empty')
