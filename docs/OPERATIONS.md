@@ -83,3 +83,43 @@ If push/PR creation is blocked, post a single handoff comment with:
 5. Exact maintainer action needed.
 
 This keeps recovery deterministic and minimizes back-and-forth.
+
+## 5) Idempotent PR Review Submission
+
+Before submitting a PR review, check whether your most recent review on that PR already
+matches the intended state at the current commit. Submitting duplicate reviews at the same
+commit SHA pollutes the audit trail and wastes API quota.
+
+### Check existing review state
+
+```bash
+# Get your reviews on this PR, most recent first
+gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+  --jq '[.[] | select(.user.login == "<your-login>")] | last | {state: .state, commit_id: .commit_id}'
+```
+
+### Decision logic
+
+```bash
+CURRENT_SHA=$(gh api repos/<owner>/<repo>/pulls/<number> --jq .head.sha)
+LAST_REVIEW=$(gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+  --jq '[.[] | select(.user.login == "<your-login>")] | last // empty')
+
+LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // empty')
+LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // empty')
+
+if [ "$LAST_STATE" = "APPROVED" ] && [ "$LAST_SHA" = "$CURRENT_SHA" ]; then
+  echo "Already approved at this commit — skipping duplicate submission"
+else
+  gh pr review <number> --approve --body "..."
+fi
+```
+
+### Rules
+
+- Skip submission when: same state **and** same commit SHA as your last review.
+- Always submit when: no prior review exists, the commit has changed, or the state differs.
+- `COMMENTED` reviews are exempt — they add incremental context and should not be deduplicated.
+- Check `CHANGES_REQUESTED` the same way: if you already requested changes at this SHA, don't repeat it.
+
+This prevents the duplicate-review chains documented in issue #479.

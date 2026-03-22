@@ -80,6 +80,7 @@ PR checks are expected to include:
 - Environment variables may include quotes/whitespace in hosted setups; use normalization helpers in `api/lib/env-validation.ts` and `api/lib/llm/env.ts` (`normalizeEnvString`).
 - Vercel functions have execution-time limits based on deployment settings; no `maxDuration` is configured in this repo.
 - If `gh` commands fail with `projectCards` GraphQL errors, use explicit `--json` fields or REST fallback commands from `CONTRIBUTING.md`.
+- **Duplicate PR reviews**: always check your most recent review state and commit SHA before calling `gh pr review`. If state and SHA already match, skip submission. See `docs/OPERATIONS.md` §5 for the exact pattern. Duplicate reviews at the same commit add API noise without changing the merge gate outcome.
 
 ## Security boundaries
 
