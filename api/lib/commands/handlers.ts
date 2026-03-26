@@ -1887,7 +1887,7 @@ export async function autoGatherIfEligible(params: AutoGatherParams): Promise<vo
   const { octokit, owner, repo, issueNumber, installationId, issueLabels, autoGatherConfig, appId, log } = params;
 
   // Gate on discussion phase
-  const isDiscussion = issueLabels.some((l) => isLabelMatch(l.name, LABELS.DISCUSSION));
+  const isDiscussion = issueLabels.some((l) => l.name === LABELS.DISCUSSION);
   if (!isDiscussion) return;
 
   const ref: IssueRef = { owner, repo, issueNumber, installationId };

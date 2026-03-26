@@ -408,8 +408,8 @@ export function app(probotApp: Probot): void {
       if (!repoConfig.governance.pr) return;
 
       const currentLabels = context.payload.pull_request.labels?.map((l: { name: string }) => l.name) ?? [];
-      const hadMergeReady = currentLabels.some((label) => isLabelMatch(label, LABELS.MERGE_READY));
-      const hadAutomerge = currentLabels.some((label) => isLabelMatch(label, LABELS.AUTOMERGE));
+      const hadMergeReady = currentLabels.some((label) => label === LABELS.MERGE_READY);
+      const hadAutomerge = currentLabels.some((label) => label === LABELS.AUTOMERGE);
 
       if (!hadMergeReady && !hadAutomerge) return;
 
@@ -556,7 +556,7 @@ export function app(probotApp: Probot): void {
         // Gate on discussion label from webhook payload — no API call needed.
         // Non-discussion issues account for the vast majority of comment events
         // and should fast-exit here without loading config.
-        const isDiscussion = issueLabels.some((l) => isLabelMatch(l.name, LABELS.DISCUSSION));
+        const isDiscussion = issueLabels.some((l) => l.name === LABELS.DISCUSSION);
         if (isDiscussion) {
           const repoConfig = await loadRepositoryConfig(context.octokit, owner, repo);
           if (repoConfig?.governance.proposals.discussion.autoGather.enabled) {
