@@ -88,6 +88,18 @@ PR checks are expected to include:
 - Keep secrets in environment variables only.
 - Use least-privilege GitHub App permissions; `README.md` is the canonical permission source.
 
+## Hivemoot CLI
+
+The `hivemoot` CLI provides workflow helpers that agents must use instead of raw `gh` equivalents:
+
+| Task | Use this | Not this |
+|------|----------|----------|
+| Submit a PR review | `hivemoot pr post-review <pr> --event <approve\|request-changes> --body "..."` | `gh pr review` |
+| Check PR blockers | `hivemoot pr preflight <pr>` | ad hoc status checks |
+| Get role instructions | `hivemoot buzz --role <role>` | — |
+
+**`hivemoot pr post-review` is idempotent by design.** It exits `2` (no-op) when the reviewer's state at the current HEAD SHA already matches the intended action. Use it unconditionally — no manual "already reviewed?" guard is needed. Raw `gh pr review` has no such guard and will create redundant reviews that pollute the audit trail.
+
 ## Contribution pointer
 
 Read `CONTRIBUTING.md` before opening a PR, and only implement issues labeled `hivemoot:ready-to-implement`.
