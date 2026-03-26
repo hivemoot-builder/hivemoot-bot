@@ -138,11 +138,17 @@ export class GovernanceService {
    * Defaults to the voting-mode welcome text unless a caller provides an override.
    */
   async startDiscussion(ref: IssueRef, welcomeMessage = MESSAGES.ISSUE_WELCOME_VOTING): Promise<void> {
-    const commentBody = buildDiscussionComment(welcomeMessage, ref.issueNumber);
-    await Promise.all([
-      this.issues.addLabels(ref, [LABELS.DISCUSSION]),
-      this.issues.comment(ref, commentBody),
-    ]);
+    // Always apply the label first — addLabels is idempotent, so it is safe to
+    // re-apply on replay. Doing it before the comment-duplicate check ensures
+    // that a partial failure (comment posted, label call failed) is fully
+    // recovered on redelivery.
+    await this.issues.addLabels(ref, [LABELS.DISCUSSION]);
+    const exists = await this.issues.hasWelcomeComment(ref);
+    if (exists) {
+      this.logger.info(`Welcome comment already exists for issue #${ref.issueNumber}, skipping`);
+      return;
+    }
+    await this.issues.comment(ref, buildDiscussionComment(welcomeMessage, ref.issueNumber));
   }
 
   /**
@@ -321,7 +327,7 @@ export class GovernanceService {
     const commentId = await this.issues.findVotingCommentId(ref);
 
     if (!commentId) {
-      await this.handleMissingVotingComment(ref);
+      await this.handleMissingVotingComment(ref, LABELS.VOTING);
       return "skipped";
     }
 
@@ -424,7 +430,7 @@ export class GovernanceService {
     const commentId = await this.issues.findVotingCommentId(ref);
 
     if (!commentId) {
-      await this.handleMissingVotingComment(ref);
+      await this.handleMissingVotingComment(ref, LABELS.EXTENDED_VOTING);
       return "skipped";
     }
 
@@ -536,7 +542,7 @@ export class GovernanceService {
    *   (race with webhook handler or cron reconciliation — healthy state)
    * - exception: self-heal failed, falls back to human help request
    */
-  private async handleMissingVotingComment(ref: IssueRef): Promise<void> {
+  private async handleMissingVotingComment(ref: IssueRef, currentPhaseLabel: string): Promise<void> {
     // Attempt self-heal: post the missing voting comment
     try {
       const result = await this.postVotingComment(ref);
@@ -579,14 +585,16 @@ export class GovernanceService {
     await this.issues.comment(ref, errorComment);
 
     // Add the hivemoot:needs-human label to make the issue visible in issue lists
+    // and clear the active voting phase label so the issue does not end up dual-labeled.
     // Note: Label addition is best-effort - if the label doesn't exist in the repo,
     // we log a warning but don't fail the operation (the comment is the critical part)
     try {
       await this.issues.addLabels(ref, [LABELS.NEEDS_HUMAN]);
+      await this.issues.removeLabel(ref, currentPhaseLabel);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `Failed to add ${LABELS.NEEDS_HUMAN} label to issue #${ref.issueNumber}: ${errorMsg}`,
+        `Failed to swap ${currentPhaseLabel} -> ${LABELS.NEEDS_HUMAN} labels on issue #${ref.issueNumber}: ${errorMsg}`,
       );
     }
 

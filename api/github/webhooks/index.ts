@@ -16,7 +16,9 @@ import {
 } from "../../lib/index.js";
 import {
   getLinkedIssues,
+  disablePullRequestAutoMerge,
 } from "../../lib/graphql-queries.js";
+import { isAutoMergeNotEnabledError } from "../../lib/transient-error.js";
 import { hasSameRepoClosingKeywordRef } from "../../lib/closing-keywords.js";
 import { filterByLabel } from "../../lib/types.js";
 import { validateEnv, getAppId } from "../../lib/env-validation.js";
@@ -24,7 +26,7 @@ import {
   processImplementationIntake,
   recalculateLeaderboardForPR,
 } from "../../lib/implementation-intake.js";
-import { parseCommand, executeCommand, retryQueuedSquash } from "../../lib/commands/index.js";
+import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible } from "../../lib/commands/index.js";
 import { getLLMReadiness } from "../../lib/llm/provider.js";
 import { registerHandlerDispatcher } from "../../handlers/dispatcher.js";
 import { handlerEventMap } from "../../handlers/registry.js";
@@ -219,7 +221,11 @@ export function app(probotApp: Probot): void {
           ref: { owner, repo, prNumber: number },
           config: repoConfig.governance.pr.automerge,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          nodeId: context.payload.pull_request.node_id,
+          draft: context.payload.pull_request.draft,
+          mergeable: context.payload.pull_request.mergeable,
           log: context.log,
+          graphql: context.octokit,
         });
       }
     } catch (error) {
@@ -262,9 +268,28 @@ export function app(probotApp: Probot): void {
       const prRef = { owner, repo, prNumber: number };
       const currentLabels = context.payload.pull_request.labels?.map((label: { name?: string }) => label.name ?? "") ?? [];
       const hadQueuedSquash = currentLabels.some((label) => label === LABELS.SQUASH_QUEUED);
+      const hadAutomerge = currentLabels.some((label) => label === LABELS.AUTOMERGE);
       await prs.removeLabel(prRef, LABELS.MERGE_READY);
       await prs.removeLabel(prRef, LABELS.SQUASH_QUEUED);
-      await prs.removeLabel(prRef, LABELS.AUTOMERGE);
+      // Phase 2: disable native auto-merge before stripping the label so the two stay in sync.
+      // On unexpected error, retain the label (matching removeIfLabeled's fail-closed contract).
+      let skipAutomergeRemoval = false;
+      if (hadAutomerge && repoConfig.governance.pr?.automerge && !repoConfig.governance.pr.automerge.dryRun) {
+        try {
+          await disablePullRequestAutoMerge(context.octokit, context.payload.pull_request.node_id);
+        } catch (err) {
+          if (isAutoMergeNotEnabledError(err)) {
+            // auto-merge was never enabled — proceed with label removal
+          } else {
+            const msg = err instanceof Error ? err.message : String(err);
+            context.log.warn(`[PR #${number}] Failed to disable GitHub auto-merge on synchronize, retaining label for retry: ${msg}`);
+            skipAutomergeRemoval = true;
+          }
+        }
+      }
+      if (!skipAutomergeRemoval) {
+        await prs.removeLabel(prRef, LABELS.AUTOMERGE);
+      }
 
       if (hadQueuedSquash) {
         await prs.comment(
@@ -294,11 +319,135 @@ export function app(probotApp: Probot): void {
           ref: prRef,
           config: repoConfig.governance.pr.automerge,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          nodeId: context.payload.pull_request.node_id,
+          draft: context.payload.pull_request.draft,
+          mergeable: context.payload.pull_request.mergeable,
           log: context.log,
+          graphql: context.octokit,
         });
       }
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process PR update");
+      throw error;
+    }
+  });
+
+  /**
+   * Handle draft -> ready transition.
+   * Re-runs merge-readiness/automerge evaluation when an author marks a PR ready.
+   */
+  probotApp.on("pull_request.ready_for_review", async (context) => {
+    const { number } = context.payload.pull_request;
+    const { owner, repo, fullName } = getRepoContext(context.payload.repository);
+
+    context.log.info(`Processing ready_for_review for PR #${number} in ${fullName}`);
+
+    try {
+      const appId = getAppId();
+      const prs = createPROperations(context.octokit, { appId });
+      const repoConfig = await loadRepositoryConfig(context.octokit, owner, repo);
+      if (!repoConfig) {
+        context.log.debug(`No config in ${fullName}; skipping ready_for_review automation`);
+        return;
+      }
+
+      if (repoConfig.governance.pr) {
+        const currentLabels = context.payload.pull_request.labels?.map(
+          (l: { name: string }) => l.name
+        );
+        const prRef = { owner, repo, prNumber: number };
+
+        await evaluateMergeReadiness({
+          prs,
+          ref: prRef,
+          config: repoConfig.governance.pr.mergeReady,
+          trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          currentLabels,
+          draft: false,
+          log: context.log,
+        });
+
+        await evaluateAutomerge({
+          prs,
+          ref: prRef,
+          config: repoConfig.governance.pr.automerge,
+          trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          nodeId: context.payload.pull_request.node_id,
+          currentLabels,
+          draft: false,
+          mergeable: context.payload.pull_request.mergeable,
+          log: context.log,
+          graphql: context.octokit,
+        });
+      }
+    } catch (error) {
+      context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process ready_for_review");
+      throw error;
+    }
+  });
+
+  /**
+   * Handle ready -> draft transition.
+   * Draft PRs cannot be merge-ready/automerge, so remove both labels immediately.
+   */
+  probotApp.on("pull_request.converted_to_draft", async (context) => {
+    const { number } = context.payload.pull_request;
+    const { owner, repo, fullName } = getRepoContext(context.payload.repository);
+
+    context.log.info(`Processing converted_to_draft for PR #${number} in ${fullName}`);
+
+    try {
+      const appId = getAppId();
+      const prs = createPROperations(context.octokit, { appId });
+      const repoConfig = await loadRepositoryConfig(context.octokit, owner, repo);
+      if (!repoConfig) {
+        context.log.debug(`No config in ${fullName}; skipping converted_to_draft automation`);
+        return;
+      }
+
+      if (!repoConfig.governance.pr) return;
+
+      const currentLabels = context.payload.pull_request.labels?.map((l: { name: string }) => l.name) ?? [];
+      const hadMergeReady = currentLabels.some((label) => isLabelMatch(label, LABELS.MERGE_READY));
+      const hadAutomerge = currentLabels.some((label) => isLabelMatch(label, LABELS.AUTOMERGE));
+
+      if (!hadMergeReady && !hadAutomerge) return;
+
+      const prRef = { owner, repo, prNumber: number };
+      const removedLabels: string[] = [];
+
+      if (hadMergeReady) {
+        await prs.removeLabel(prRef, LABELS.MERGE_READY);
+        removedLabels.push(LABELS.MERGE_READY);
+      }
+      if (hadAutomerge) {
+        // Phase 2: disable native auto-merge before stripping the label so the two stay in sync.
+        // On unexpected error, retain the label (matching removeIfLabeled's fail-closed contract).
+        let skipAutomergeRemoval = false;
+        if (repoConfig.governance.pr.automerge && !repoConfig.governance.pr.automerge.dryRun) {
+          try {
+            await disablePullRequestAutoMerge(context.octokit, context.payload.pull_request.node_id);
+          } catch (err) {
+            if (isAutoMergeNotEnabledError(err)) {
+              // auto-merge was never enabled — proceed with label removal
+            } else {
+              const msg = err instanceof Error ? err.message : String(err);
+              context.log.warn(`[PR #${number}] Failed to disable GitHub auto-merge on converted_to_draft, retaining label for retry: ${msg}`);
+              skipAutomergeRemoval = true;
+            }
+          }
+        }
+        if (!skipAutomergeRemoval) {
+          await prs.removeLabel(prRef, LABELS.AUTOMERGE);
+          removedLabels.push(LABELS.AUTOMERGE);
+        }
+      }
+
+      if (hadMergeReady) {
+        await prs.comment(prRef, PR_MESSAGES.prConvertedToDraft(removedLabels));
+      }
+    } catch (error) {
+      context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process converted_to_draft");
       throw error;
     }
   });
@@ -399,8 +548,31 @@ export function app(probotApp: Probot): void {
         return;
       }
 
-      // Non-command comments: only process PR comments for intake
+      // Non-command comments on issues: check auto-gather eligibility (discussion issues only)
       if (!issue.pull_request) {
+        const issueLabels = (issue.labels ?? []).map((l) =>
+          typeof l === "string" ? { name: l } : { name: l.name ?? "" },
+        );
+        // Gate on discussion label from webhook payload — no API call needed.
+        // Non-discussion issues account for the vast majority of comment events
+        // and should fast-exit here without loading config.
+        const isDiscussion = issueLabels.some((l) => isLabelMatch(l.name, LABELS.DISCUSSION));
+        if (isDiscussion) {
+          const repoConfig = await loadRepositoryConfig(context.octokit, owner, repo);
+          if (repoConfig?.governance.proposals.discussion.autoGather.enabled) {
+            await autoGatherIfEligible({
+              octokit: context.octokit as Parameters<typeof autoGatherIfEligible>[0]["octokit"],
+              owner,
+              repo,
+              issueNumber: issue.number,
+              installationId: context.payload.installation?.id,
+              issueLabels,
+              autoGatherConfig: repoConfig.governance.proposals.discussion.autoGather,
+              appId,
+              log: context.log,
+            });
+          }
+        }
         return;
       }
 
@@ -559,12 +731,24 @@ export function app(probotApp: Probot): void {
           log: context.log,
         });
 
+        // SimplePullRequest omits mergeable; fetch from REST so the conflict gate fires correctly.
+        let reviewPRMergeable: boolean | null | undefined;
+        let reviewPRNodeId: string | undefined;
+        if (repoConfig.governance.pr.automerge) {
+          const prState = await prs.get({ owner, repo, prNumber: number });
+          reviewPRMergeable = prState.mergeable;
+          reviewPRNodeId = prState.nodeId;
+        }
         await evaluateAutomerge({
           prs,
           ref: { owner, repo, prNumber: number },
           config: repoConfig.governance.pr.automerge,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          nodeId: reviewPRNodeId,
+          draft: context.payload.pull_request.draft,
+          mergeable: reviewPRMergeable,
           log: context.log,
+          graphql: context.octokit,
         });
       }
     } catch (error) {
@@ -602,12 +786,24 @@ export function app(probotApp: Probot): void {
           log: context.log,
         });
 
+        // SimplePullRequest omits mergeable; fetch from REST so the conflict gate fires correctly.
+        let dismissedPRMergeable: boolean | null | undefined;
+        let dismissedPRNodeId: string | undefined;
+        if (repoConfig.governance.pr.automerge) {
+          const prState = await prs.get({ owner, repo, prNumber: number });
+          dismissedPRMergeable = prState.mergeable;
+          dismissedPRNodeId = prState.nodeId;
+        }
         await evaluateAutomerge({
           prs,
           ref: { owner, repo, prNumber: number },
           config: repoConfig.governance.pr.automerge,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+          nodeId: dismissedPRNodeId,
+          draft: context.payload.pull_request.draft,
+          mergeable: dismissedPRMergeable,
           log: context.log,
+          graphql: context.octokit,
         });
       }
     } catch (error) {
@@ -646,6 +842,7 @@ export function app(probotApp: Probot): void {
           config: repoConfig.governance.pr.mergeReady,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
           currentLabels,
+          draft: context.payload.pull_request.draft,
           log: context.log,
         });
       }
@@ -680,22 +877,38 @@ export function app(probotApp: Probot): void {
       const errors: Error[] = [];
       for (const pr of pull_requests) {
         try {
+          const prRef = { owner, repo, prNumber: pr.number };
           context.log.info(`Evaluating merge-readiness for PR #${pr.number} after check_suite in ${fullName}`);
           await evaluateMergeReadiness({
             prs,
-            ref: { owner, repo, prNumber: pr.number },
+            ref: prRef,
             config: repoConfig.governance.pr.mergeReady,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
             headSha,
             log: context.log,
           });
+          // CheckSuitePullRequest omits draft and mergeable; fetch from REST so the
+          // automerge gates can fire correctly on CI completion events.
+          let prDraft: boolean | undefined;
+          let prMergeable: boolean | null | undefined;
+          let prNodeId: string | undefined;
+          if (repoConfig.governance.pr.automerge) {
+            const prState = await prs.get(prRef);
+            prDraft = prState.draft;
+            prMergeable = prState.mergeable;
+            prNodeId = prState.nodeId;
+          }
           await evaluateAutomerge({
             prs,
-            ref: { owner, repo, prNumber: pr.number },
+            ref: prRef,
             config: repoConfig.governance.pr.automerge,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+            nodeId: prNodeId,
             headSha,
+            draft: prDraft,
+            mergeable: prMergeable,
             log: context.log,
+            graphql: context.octokit,
           });
         } catch (error) {
           context.log.error({ err: error, pr: pr.number, repo: fullName }, "Failed to evaluate merge-readiness after check_suite");
@@ -739,25 +952,41 @@ export function app(probotApp: Probot): void {
       const errors: Error[] = [];
       for (const pr of pull_requests) {
         try {
+          const prRef = { owner, repo, prNumber: pr.number };
           context.log.info(`Evaluating merge-readiness for PR #${pr.number} after check_run in ${fullName}`);
           const currentLabels = await prs.getLabels({ owner, repo, prNumber: pr.number });
           await evaluateMergeReadiness({
             prs,
-            ref: { owner, repo, prNumber: pr.number },
+            ref: prRef,
             config: repoConfig.governance.pr.mergeReady,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
             currentLabels,
             headSha,
             log: context.log,
           });
+          // CheckRunPullRequest omits draft and mergeable; fetch from REST so the
+          // automerge gates can fire correctly on CI completion events.
+          let prDraft: boolean | undefined;
+          let prMergeable: boolean | null | undefined;
+          let checkRunPRNodeId: string | undefined;
+          if (repoConfig.governance.pr.automerge) {
+            const prState = await prs.get(prRef);
+            prDraft = prState.draft;
+            prMergeable = prState.mergeable;
+            checkRunPRNodeId = prState.nodeId;
+          }
           await evaluateAutomerge({
             prs,
-            ref: { owner, repo, prNumber: pr.number },
+            ref: prRef,
             config: repoConfig.governance.pr.automerge,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+            nodeId: checkRunPRNodeId,
             currentLabels,
             headSha,
+            draft: prDraft,
+            mergeable: prMergeable,
             log: context.log,
+            graphql: context.octokit,
           });
 
           if (currentLabels.some((label) => label === LABELS.SQUASH_QUEUED)) {
@@ -824,8 +1053,10 @@ export function app(probotApp: Probot): void {
         per_page: 100,
       });
 
-      // Filter to PRs whose HEAD matches the status event SHA
-      const matchingPRs = data.filter((pr: { head: { sha: string } }) => pr.head.sha === sha);
+      // Filter to PRs whose HEAD matches the status event SHA while preserving draft state.
+      const matchingPRs = data.filter(
+        (pr: { head: { sha: string }; draft?: boolean; number: number }) => pr.head.sha === sha
+      );
 
       const errors: Error[] = [];
       for (const pr of matchingPRs) {
@@ -841,14 +1072,26 @@ export function app(probotApp: Probot): void {
             headSha: sha,
             log: context.log,
           });
+          // pulls.list omits mergeable; fetch from REST so the conflict gate fires correctly.
+          let statusPRMergeable: boolean | null | undefined;
+          let statusPRNodeId: string | undefined;
+          if (repoConfig.governance.pr.automerge) {
+            const prState = await prs.get({ owner, repo, prNumber: pr.number });
+            statusPRMergeable = prState.mergeable;
+            statusPRNodeId = prState.nodeId;
+          }
           await evaluateAutomerge({
             prs,
             ref: { owner, repo, prNumber: pr.number },
             config: repoConfig.governance.pr.automerge,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+            nodeId: statusPRNodeId,
             currentLabels,
             headSha: sha,
+            draft: pr.draft,
+            mergeable: statusPRMergeable,
             log: context.log,
+            graphql: context.octokit,
           });
 
           if (currentLabels.some((label) => label === LABELS.SQUASH_QUEUED)) {

@@ -1510,7 +1510,7 @@ governance: ${governanceValue}
         }
       });
 
-      it("should return pr with defaults when pr: section is present but empty", async () => {
+      it("should return pr config with stale cleanup disabled when pr: section is present but empty", async () => {
         const configYaml = `
 governance:
   pr: {}
@@ -1526,9 +1526,50 @@ governance:
         const config = await loadRepositoryConfig(octokit, "owner", "repo");
 
         expect(config.governance.pr).not.toBeNull();
-        expect(config.governance.pr!.staleDays).toBe(PR_STALE_THRESHOLD_DAYS);
+        expect(config.governance.pr!.staleDays).toBeNull();
         expect(config.governance.pr!.maxPRsPerIssue).toBe(MAX_PRS_PER_ISSUE);
         expect(config.governance.pr!.intake).toEqual([{ method: "auto" }]);
+      });
+
+      it("should keep stale cleanup disabled when staleDays is explicitly set to null", async () => {
+        const configYaml = `
+governance:
+  pr:
+    staleDays: null
+`;
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(configYaml),
+            encoding: "base64",
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+
+        expect(config.governance.pr).not.toBeNull();
+        expect(config.governance.pr!.staleDays).toBeNull();
+      });
+
+      it("should keep stale cleanup disabled when other pr settings are configured without staleDays", async () => {
+        const configYaml = `
+governance:
+  pr:
+    maxPRsPerIssue: 5
+`;
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(configYaml),
+            encoding: "base64",
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+
+        expect(config.governance.pr).not.toBeNull();
+        expect(config.governance.pr!.staleDays).toBeNull();
+        expect(config.governance.pr!.maxPRsPerIssue).toBe(5);
       });
 
       it("should use default when staleDays is an object", async () => {
@@ -2522,6 +2563,323 @@ governance:
 
         const config = await loadRepositoryConfig(octokit, "owner", "repo");
         expect(config!.governance.pr!.automerge).toBeNull();
+      });
+
+      it("should default mergeMethod to squash", async () => {
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(`
+governance:
+  pr:
+    trustedReviewers: ["alice"]
+    automerge:
+      enabled: true
+`),
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.mergeMethod).toBe("squash");
+      });
+
+      it("should parse mergeMethod: rebase", async () => {
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(`
+governance:
+  pr:
+    trustedReviewers: ["alice"]
+    automerge:
+      mergeMethod: rebase
+`),
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.mergeMethod).toBe("rebase");
+      });
+
+      it("should default mergeMethod to squash when invalid value provided", async () => {
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(`
+governance:
+  pr:
+    trustedReviewers: ["alice"]
+    automerge:
+      mergeMethod: fast-forward
+`),
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.mergeMethod).toBe("squash");
+      });
+    });
+
+    describe("automerge.commitHeadline and automerge.commitBody", () => {
+      it("should parse valid commitHeadline and commitBody strings", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitHeadline: "Auto-merge: {{title}}"
+      commitBody: "Merged via hivemoot automerge."
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitHeadline).toBe("Auto-merge: {{title}}");
+        expect(config!.governance.pr!.automerge!.commitBody).toBe("Merged via hivemoot automerge.");
+      });
+
+      it("should accept empty string for commitBody (clears the body)", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitBody: ""
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitBody).toBe("");
+      });
+
+      it("should ignore empty string commitHeadline and leave it undefined", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitHeadline: ""
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitHeadline).toBeUndefined();
+      });
+
+      it("should ignore whitespace-only commitHeadline and leave it undefined", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitHeadline: "   "
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitHeadline).toBeUndefined();
+      });
+
+      it("should trim leading/trailing whitespace from valid commitHeadline", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitHeadline: "  Auto-merge: title  "
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitHeadline).toBe("Auto-merge: title");
+      });
+
+      it("should ignore non-string commitHeadline and leave it undefined", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitHeadline: 42
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitHeadline).toBeUndefined();
+      });
+
+      it("should ignore non-string commitBody and leave it undefined", async () => {
+        const configYaml = `
+version: 1
+governance:
+  pr:
+    trustedReviewers: [alice]
+    automerge:
+      dryRun: false
+      allowedPaths: ["**/*.md"]
+      commitBody: true
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.pr!.automerge!.commitBody).toBeUndefined();
+      });
+    });
+
+    describe("proposals.discussion.autoGather", () => {
+      it("should default to disabled when not configured", async () => {
+        const configYaml = `version: 1\n`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather).toEqual({
+          enabled: false,
+          minNewComments: CONFIG_BOUNDS.autoGather.minNewComments.default,
+          cooldownMinutes: CONFIG_BOUNDS.autoGather.cooldownMinutes.default,
+        });
+      });
+
+      it("should default to disabled in getDefaultConfig", () => {
+        const defaults = getDefaultConfig();
+        expect(defaults.governance.proposals.discussion.autoGather.enabled).toBe(false);
+      });
+
+      it("should parse enabled auto-gather with custom values", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather:
+        enabled: true
+        minNewComments: 3
+        cooldownMinutes: 30
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather).toEqual({
+          enabled: true,
+          minNewComments: 3,
+          cooldownMinutes: 30,
+        });
+      });
+
+      it("should use defaults for omitted fields when enabled", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather:
+        enabled: true
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather.enabled).toBe(true);
+        expect(config!.governance.proposals.discussion.autoGather.minNewComments).toBe(
+          CONFIG_BOUNDS.autoGather.minNewComments.default
+        );
+        expect(config!.governance.proposals.discussion.autoGather.cooldownMinutes).toBe(
+          CONFIG_BOUNDS.autoGather.cooldownMinutes.default
+        );
+      });
+
+      it("should clamp minNewComments to bounds", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather:
+        enabled: true
+        minNewComments: 9999
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather.minNewComments).toBe(
+          CONFIG_BOUNDS.autoGather.minNewComments.max
+        );
+      });
+
+      it("should clamp cooldownMinutes to bounds", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather:
+        enabled: true
+        cooldownMinutes: 0
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather.cooldownMinutes).toBe(
+          CONFIG_BOUNDS.autoGather.cooldownMinutes.min
+        );
+      });
+
+      it("should disable when enabled is not boolean", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather:
+        enabled: "yes"
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather.enabled).toBe(false);
+      });
+
+      it("should disable when autoGather is not an object", async () => {
+        const configYaml = `
+version: 1
+governance:
+  proposals:
+    discussion:
+      autoGather: "invalid"
+`;
+        const octokit = createMockOctokit({
+          data: { type: "file", content: encodeBase64(configYaml), encoding: "base64" },
+        });
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        expect(config!.governance.proposals.discussion.autoGather.enabled).toBe(false);
       });
     });
   });

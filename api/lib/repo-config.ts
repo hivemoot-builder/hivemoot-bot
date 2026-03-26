@@ -55,6 +55,8 @@ export interface MergeReadyConfig {
 
 // ── Automerge Config ────────────────────────────────────────────────────
 
+export type MergeMethod = "squash" | "merge" | "rebase";
+
 export interface AutomergeConfig {
   dryRun: boolean;
   allowedPaths: string[];
@@ -63,6 +65,20 @@ export interface AutomergeConfig {
   maxChangedLines: number;
   minApprovals: number;
   requireChecks: boolean;
+  /** Merge method used when enabling GitHub native auto-merge. Default: "squash". */
+  mergeMethod: MergeMethod;
+  /**
+   * Custom commit headline for the auto-merge commit.
+   * Only applies to SQUASH and MERGE methods; ignored for REBASE.
+   * When absent, GitHub uses its default (PR title for squash, standard merge message for merge).
+   */
+  commitHeadline?: string;
+  /**
+   * Custom commit body for the auto-merge commit.
+   * Only applies to SQUASH and MERGE methods; ignored for REBASE.
+   * When absent, GitHub uses its default.
+   */
+  commitBody?: string;
 }
 
 // ── Standup Config ──────────────────────────────────────────────────────
@@ -70,6 +86,14 @@ export interface AutomergeConfig {
 export interface StandupConfig {
   enabled: boolean;
   category: string;
+}
+
+// ── Auto-Gather Config ──────────────────────────────────────────────────
+
+export interface AutoGatherConfig {
+  enabled: boolean;
+  minNewComments: number;
+  cooldownMinutes: number;
 }
 
 export interface VotingAutoExit {
@@ -121,6 +145,11 @@ export interface RepoConfigFile {
     proposals?: {
       discussion?: {
         exits?: unknown[];
+        autoGather?: {
+          enabled?: boolean;
+          minNewComments?: number;
+          cooldownMinutes?: number;
+        };
       };
       voting?: {
         exits?: unknown[];
@@ -149,7 +178,8 @@ export interface RepoConfigFile {
  * Present only when the `pr:` section exists in the config file.
  */
 export interface PRConfig {
-  staleDays: number;
+  /** Null unless `governance.pr.staleDays` is explicitly present in YAML. */
+  staleDays: number | null;
   maxPRsPerIssue: number;
   trustedReviewers: string[];
   intake: IntakeMethod[];
@@ -169,6 +199,7 @@ export interface EffectiveConfig {
         exits: DiscussionExit[];
         /** Derived from the last auto exit's afterMs (0 when manual-only). */
         durationMs: number;
+        autoGather: AutoGatherConfig;
       };
       voting: {
         exits: VotingExit[];
@@ -277,6 +308,13 @@ function parseIntValue(
   }
 
   return clamped;
+}
+
+function hasOwnConfigKey(value: unknown, key: string): boolean {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, key);
 }
 
 /**
@@ -920,6 +958,66 @@ function parseMergeReadyConfig(
   return { minApprovals };
 }
 
+/**
+ * Parse and validate auto-gather config.
+ * Opt-in feature — disabled by default.
+ * When enabled, auto-gather triggers on discussion-phase issues after N new comments.
+ */
+function parseAutoGatherConfig(
+  value: unknown,
+  repoFullName: string
+): AutoGatherConfig {
+  const disabled: AutoGatherConfig = {
+    enabled: false,
+    minNewComments: CONFIG_BOUNDS.autoGather.minNewComments.default,
+    cooldownMinutes: CONFIG_BOUNDS.autoGather.cooldownMinutes.default,
+  };
+
+  if (value === undefined || value === null) {
+    return disabled;
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    logger.warn(
+      `[${repoFullName}] Invalid proposals.discussion.autoGather config: expected object. Disabling auto-gather.`
+    );
+    return disabled;
+  }
+
+  const obj = value as { enabled?: unknown; minNewComments?: unknown; cooldownMinutes?: unknown };
+
+  let enabled = false;
+  if (obj.enabled !== undefined && obj.enabled !== null) {
+    if (typeof obj.enabled === "boolean") {
+      enabled = obj.enabled;
+    } else {
+      logger.warn(
+        `[${repoFullName}] Invalid proposals.discussion.autoGather.enabled: expected boolean. Disabling auto-gather.`
+      );
+    }
+  }
+
+  if (!enabled) {
+    return disabled;
+  }
+
+  const minNewComments = parseIntValue(
+    obj.minNewComments,
+    CONFIG_BOUNDS.autoGather.minNewComments,
+    "proposals.discussion.autoGather.minNewComments",
+    repoFullName
+  );
+
+  const cooldownMinutes = parseIntValue(
+    obj.cooldownMinutes,
+    CONFIG_BOUNDS.autoGather.cooldownMinutes,
+    "proposals.discussion.autoGather.cooldownMinutes",
+    repoFullName
+  );
+
+  return { enabled: true, minNewComments, cooldownMinutes };
+}
+
 const DEFAULT_ALLOWED_PATHS = ["**/*.md", "**/*.txt", "docs/**"];
 const DEFAULT_DENY_PATHS = [
   ".github/**",
@@ -1015,6 +1113,9 @@ function parseAutomergeConfig(
     maxChangedLines?: unknown;
     minApprovals?: unknown;
     requireChecks?: unknown;
+    mergeMethod?: unknown;
+    commitHeadline?: unknown;
+    commitBody?: unknown;
   };
 
   // Check enabled flag — absent defaults to true (presence of section = opt-in)
@@ -1092,6 +1193,50 @@ function parseAutomergeConfig(
     Math.min(CONFIG_BOUNDS.automerge.minApprovals.max, trustedReviewers.length)
   );
 
+  // Parse mergeMethod (default "squash")
+  const VALID_MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
+  let mergeMethod: MergeMethod = "squash";
+  if (obj.mergeMethod !== undefined && obj.mergeMethod !== null) {
+    if (typeof obj.mergeMethod === "string" && VALID_MERGE_METHODS.includes(obj.mergeMethod as MergeMethod)) {
+      mergeMethod = obj.mergeMethod as MergeMethod;
+    } else {
+      logger.warn(
+        `[${repoFullName}] Invalid automerge.mergeMethod: "${String(obj.mergeMethod)}". ` +
+        `Expected "squash", "merge", or "rebase". Using default ("squash").`
+      );
+    }
+  }
+
+  // Parse optional commit message fields (only used when dryRun: false and mergeMethod is squash/merge)
+  let commitHeadline: string | undefined;
+  if (obj.commitHeadline !== undefined && obj.commitHeadline !== null) {
+    if (typeof obj.commitHeadline !== "string") {
+      logger.warn(
+        `[${repoFullName}] automerge.commitHeadline must be a non-empty string. Ignoring.`
+      );
+    } else {
+      const trimmed = obj.commitHeadline.trim();
+      if (trimmed.length > 0) {
+        commitHeadline = trimmed;
+      } else {
+        // empty or whitespace-only — meaningless commit subject
+        logger.warn(
+          `[${repoFullName}] automerge.commitHeadline is blank after trimming. Ignoring.`
+        );
+      }
+    }
+  }
+  let commitBody: string | undefined;
+  if (obj.commitBody !== undefined && obj.commitBody !== null) {
+    if (typeof obj.commitBody === "string") {
+      commitBody = obj.commitBody; // empty string is valid — clears the body
+    } else {
+      logger.warn(
+        `[${repoFullName}] automerge.commitBody must be a string. Ignoring.`
+      );
+    }
+  }
+
   return {
     dryRun,
     allowedPaths,
@@ -1100,6 +1245,9 @@ function parseAutomergeConfig(
     maxChangedLines,
     minApprovals,
     requireChecks,
+    mergeMethod,
+    commitHeadline,
+    commitBody,
   };
 }
 
@@ -1179,6 +1327,12 @@ function deriveVotingDurationMs(exits: VotingExit[]): number {
 function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
   const config = raw as RepoConfigFile | undefined;
 
+  // Discussion auto-gather config
+  const autoGather = parseAutoGatherConfig(
+    config?.governance?.proposals?.discussion?.autoGather,
+    repoFullName
+  );
+
   // Discussion exits
   const discussionExitsRaw = config?.governance?.proposals?.discussion?.exits;
   const discussionExits = parseDiscussionExits(discussionExitsRaw, repoFullName);
@@ -1198,7 +1352,11 @@ function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
     const mergeReady = parseMergeReadyConfig(prConfigRaw?.mergeReady, trustedReviewers, repoFullName);
     const automerge = parseAutomergeConfig(prConfigRaw?.automerge, trustedReviewers, repoFullName);
     pr = {
-      staleDays: parseIntValue(prConfigRaw?.staleDays, PR_STALE_DAYS_BOUNDS, "pr.staleDays", repoFullName),
+      // Stale PR cleanup is opt-in per repo: omit staleDays (or set it to null) to disable it.
+      staleDays:
+        hasOwnConfigKey(prConfigRaw, "staleDays") && prConfigRaw?.staleDays !== null
+          ? parseIntValue(prConfigRaw?.staleDays, PR_STALE_DAYS_BOUNDS, "pr.staleDays", repoFullName)
+          : null,
       maxPRsPerIssue: parseIntValue(prConfigRaw?.maxPRsPerIssue, MAX_PRS_PER_ISSUE_BOUNDS, "pr.maxPRsPerIssue", repoFullName),
       trustedReviewers,
       intake,
@@ -1221,6 +1379,7 @@ function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
         discussion: {
           exits: discussionExits,
           durationMs: deriveDiscussionDurationMs(discussionExits),
+          autoGather,
         },
         voting: {
           exits,
@@ -1251,6 +1410,11 @@ export function getDefaultConfig(): EffectiveConfig {
         discussion: {
           exits: [DEFAULT_MANUAL_DISCUSSION_EXIT],
           durationMs: 0,
+          autoGather: {
+            enabled: false,
+            minNewComments: CONFIG_BOUNDS.autoGather.minNewComments.default,
+            cooldownMinutes: CONFIG_BOUNDS.autoGather.cooldownMinutes.default,
+          },
         },
         voting: {
           exits: [DEFAULT_MANUAL_VOTING_EXIT],

@@ -53,6 +53,10 @@ export const CONFIG_BOUNDS = {
     max: 32_768,
     default: 4_096,
   },
+  autoGather: {
+    minNewComments: { min: 1, max: 100, default: 5 },
+    cooldownMinutes: { min: 5, max: 10080, default: 60 }, // 5 min..7 days
+  },
 } as const;
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -594,6 +598,15 @@ No activity for ${daysSinceActivity} days. Auto-closes in ${daysUntilClose} days
     `# 🐝 Auto-Closed 🔒
 
 Closed after ${daysSinceActivity} days of inactivity. Issue remains open for other implementations.${SIGNATURE}`,
+
+  /**
+   * Posted to a PR when it is converted to draft and merge-ready labels are removed.
+   */
+  prConvertedToDraft: (removedLabels: string[]) =>
+    `# 🐝 Back to Draft 📝
+
+Converted to draft, so removed ${removedLabels.map((label) => `\`${label}\``).join(" and ")}.
+Mark this PR ready for review to re-run merge-readiness and automerge checks.${SIGNATURE}`,
 
   /**
    * Posted to competing PRs when another PR is merged for the same issue.

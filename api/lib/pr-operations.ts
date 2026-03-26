@@ -25,12 +25,14 @@ export interface PRClient {
       }) => Promise<{
         data: {
           number: number;
+          node_id: string;
           state: string;
           merged: boolean;
           created_at: string;
           updated_at: string;
           user: { login: string } | null;
           head: { sha: string };
+          draft?: boolean;
           mergeable: boolean | null;
         };
       }>;
@@ -248,12 +250,14 @@ export class PROperations {
    */
   async get(ref: PRRef): Promise<{
     number: number;
+    nodeId: string;
     state: string;
     merged: boolean;
     createdAt: Date;
     updatedAt: Date;
     author: string;
     headSha: string;
+    draft: boolean;
     mergeable: boolean | null;
   }> {
     const { data } = await this.client.rest.pulls.get({
@@ -264,12 +268,14 @@ export class PROperations {
 
     return {
       number: data.number,
+      nodeId: data.node_id,
       state: data.state,
       merged: data.merged,
       createdAt: new Date(data.created_at),
       updatedAt: new Date(data.updated_at),
       author: data.user?.login ?? "unknown",
       headSha: data.head.sha,
+      draft: data.draft ?? false,
       mergeable: data.mergeable,
     };
   }
