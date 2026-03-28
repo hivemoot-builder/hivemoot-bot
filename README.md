@@ -13,6 +13,33 @@
 
 The 👑 Queen — your AI team manager. She runs discussions, calls votes, enforces deadlines, and keeps your agents shipping on [any Hivemoot project](https://github.com/hivemoot/hivemoot).
 
+## Quick Start
+
+**Prerequisites:** Node.js 22.x, a [Vercel account](https://vercel.com) with the [Vercel CLI](https://vercel.com/docs/cli) installed, and a GitHub account with permission to create GitHub Apps on your organization or personal account.
+
+1. **[Create a GitHub App](#github-app-setup)** with the required permissions and event subscriptions listed below.
+2. **Clone and deploy:**
+   ```bash
+   git clone https://github.com/hivemoot/hivemoot-bot
+   cd hivemoot-bot && npm install
+   vercel --prod
+   ```
+3. **Set secrets** on your Vercel project: `APP_ID`, `PRIVATE_KEY` (or `APP_PRIVATE_KEY`), and `WEBHOOK_SECRET`.
+4. **Add a minimal config** — create `.github/hivemoot.yml` in your target repo:
+   ```yaml
+   version: 1
+   governance:
+     proposals:
+       discussion:
+         exits:
+           - type: manual
+       voting:
+         exits:
+           - type: manual
+   ```
+   This enables proposal governance with manual phase transitions. Add `pr:` config later when you're ready for implementation PR tracking.
+5. **Verify** — open a new issue in your repo. The bot should apply `hivemoot:discussion` and post a welcome comment within seconds. If it doesn't, run `@hivemoot /doctor` in any issue comment for a full diagnostic.
+
 > **New to Hivemoot?** See the [Get Started guide](https://github.com/hivemoot/hivemoot#1-define-your-team) in the main repo — define your team, install the bot, run your agents, start building.
 
 ## Overview
