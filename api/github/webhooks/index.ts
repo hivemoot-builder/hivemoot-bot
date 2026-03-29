@@ -17,6 +17,7 @@ import {
 } from "../../lib/index.js";
 import {
   getLinkedIssues,
+  getReadyToImplementParentIssues,
   disablePullRequestAutoMerge,
 } from "../../lib/graphql-queries.js";
 import { isAutoMergeNotEnabledError } from "../../lib/transient-error.js";
@@ -649,17 +650,21 @@ export function app(probotApp: Probot): void {
       const mergedPrRef = { owner, repo, prNumber: number };
       await prs.removeGovernanceLabels(mergedPrRef);
 
-      for (const linkedIssue of filterByLabel(linkedIssues, LABELS.READY_TO_IMPLEMENT)) {
-        const issueRef = { owner, repo, issueNumber: linkedIssue.number };
+      // Track issues already processed to avoid double-closing in the transitive pass
+      const processedIssueNumbers = new Set<number>();
 
-        // Transition issue to implemented state
+      const closeIssueAsImplemented = async (issueNumber: number) => {
+        if (processedIssueNumbers.has(issueNumber)) return;
+        processedIssueNumbers.add(issueNumber);
+
+        const issueRef = { owner, repo, issueNumber };
         await issues.removeLabel(issueRef, LABELS.READY_TO_IMPLEMENT);
         await issues.addLabels(issueRef, [LABELS.IMPLEMENTED]);
         await issues.close(issueRef, "completed");
         await issues.comment(issueRef, PR_MESSAGES.issueImplemented(number));
 
         // Close competing PRs
-        const competingPRs = await getOpenPRsForIssue(context.octokit, owner, repo, linkedIssue.number);
+        const competingPRs = await getOpenPRsForIssue(context.octokit, owner, repo, issueNumber);
         for (const competingPR of competingPRs) {
           if (competingPR.number !== number) {
             const prRef = { owner, repo, prNumber: competingPR.number };
@@ -668,6 +673,35 @@ export function app(probotApp: Probot): void {
             await prs.removeGovernanceLabels(prRef);
             context.log.info(`Closed competing PR #${competingPR.number}`);
           }
+        }
+      };
+
+      // Direct close: issues in closingIssuesReferences that are ready-to-implement
+      for (const linkedIssue of filterByLabel(linkedIssues, LABELS.READY_TO_IMPLEMENT)) {
+        await closeIssueAsImplemented(linkedIssue.number);
+      }
+
+      // Transitive close: for each directly-closed issue that is NOT ready-to-implement,
+      // check whether any ready-to-implement issue cross-references it. This handles the
+      // case where a PR closes a sub-issue (e.g., a dismissal-guard fix) that was
+      // referenced from the parent feature issue — without requiring contributors to
+      // remember to add a closing keyword for both.
+      const nonReadyLinkedIssues = linkedIssues.filter(
+        (issue) => !filterByLabel([issue], LABELS.READY_TO_IMPLEMENT).length
+      );
+      for (const subIssue of nonReadyLinkedIssues) {
+        const parentIssues = await getReadyToImplementParentIssues(
+          context.octokit,
+          owner,
+          repo,
+          subIssue.number,
+          LABELS.READY_TO_IMPLEMENT
+        );
+        for (const parentIssue of parentIssues) {
+          context.log.info(
+            `Transitive close: PR #${number} → sub-issue #${subIssue.number} → parent #${parentIssue.number}`
+          );
+          await closeIssueAsImplemented(parentIssue.number);
         }
       }
     } catch (error) {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GraphqlResponseError } from "@octokit/graphql";
 import { GovernanceService } from "../../lib/governance.js";
 import { createIssueOperations } from "../../lib/github-client.js";
-import { getLinkedIssues, getOpenPRsForIssue, disablePullRequestAutoMerge } from "../../lib/graphql-queries.js";
+import { getLinkedIssues, getOpenPRsForIssue, disablePullRequestAutoMerge, getReadyToImplementParentIssues } from "../../lib/graphql-queries.js";
 import { processImplementationIntake, recalculateLeaderboardForPR } from "../../lib/implementation-intake.js";
 import { evaluateMergeReadiness, evaluateAutomerge, loadRepositoryConfig } from "../../lib/index.js";
 import { LABELS, MESSAGES, REQUIRED_REPOSITORY_LABELS } from "../../config.js";
@@ -34,6 +34,7 @@ vi.mock("../../lib/graphql-queries.js", async (importOriginal) => {
     getLinkedIssues: vi.fn().mockResolvedValue([]),
     getOpenPRsForIssue: vi.fn().mockResolvedValue([]),
     disablePullRequestAutoMerge: vi.fn().mockResolvedValue(undefined),
+    getReadyToImplementParentIssues: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -1501,6 +1502,8 @@ describe("Queen Bot", () => {
     beforeEach(() => {
       vi.mocked(getLinkedIssues).mockReset();
       vi.mocked(getOpenPRsForIssue).mockReset();
+      vi.mocked(getReadyToImplementParentIssues).mockReset();
+      vi.mocked(getReadyToImplementParentIssues).mockResolvedValue([]);
     });
 
     it("should close competing PR before posting superseded comment", async () => {
@@ -1554,6 +1557,110 @@ describe("Queen Bot", () => {
           ]
         : Number.MAX_SAFE_INTEGER;
       expect(closeCallOrder).toBeLessThan(supersededCallOrder);
+    });
+
+    it("should transitively close a ready-to-implement parent when a sub-issue is directly closed", async () => {
+      // Scenario: PR #379 closes sub-issue #341 (not ready-to-implement).
+      // Issue #322 (ready-to-implement) references #341.
+      // Expected: #322 should be closed as implemented even though it's not in closingIssuesReferences.
+      const { handlers } = createWebhookHarness();
+      const handler = handlers.get("pull_request.closed");
+      expect(handler).toBeDefined();
+
+      const octokit = createClosedPROctokit();
+      const log = { info: vi.fn(), error: vi.fn() };
+
+      // PR closes sub-issue #341 — no ready-to-implement label
+      vi.mocked(getLinkedIssues).mockResolvedValueOnce([
+        {
+          number: 341,
+          title: "dismissal guard fix",
+          state: "OPEN",
+          labels: { nodes: [{ name: "bug" }] },
+        },
+      ] as any);
+
+      // #341 is referenced from parent #322 (ready-to-implement)
+      vi.mocked(getReadyToImplementParentIssues).mockResolvedValueOnce([
+        {
+          number: 322,
+          title: "Auto-create onboarding PR when app is installed",
+          state: "OPEN",
+          labels: { nodes: [{ name: LABELS.READY_TO_IMPLEMENT }] },
+        },
+      ] as any);
+
+      vi.mocked(getOpenPRsForIssue).mockResolvedValue([]);
+
+      await handler!({
+        octokit,
+        log,
+        payload: {
+          pull_request: { number: 379, merged: true },
+          repository: {
+            name: "hivemoot-bot",
+            full_name: "hivemoot/hivemoot-bot",
+            owner: { login: "hivemoot" },
+          },
+        },
+      });
+
+      // Parent issue #322 should have been closed with implemented label
+      expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith(
+        expect.objectContaining({ issue_number: 322 })
+      );
+      expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith(
+        expect.objectContaining({ issue_number: 322, labels: [LABELS.IMPLEMENTED] })
+      );
+      expect(octokit.rest.issues.update).toHaveBeenCalledWith(
+        expect.objectContaining({ issue_number: 322, state: "closed", state_reason: "completed" })
+      );
+    });
+
+    it("should not double-close an issue that appears in both direct and transitive paths", async () => {
+      // Edge case: a single issue is both directly linked and transitively referenced.
+      const { handlers } = createWebhookHarness();
+      const handler = handlers.get("pull_request.closed");
+      expect(handler).toBeDefined();
+
+      const octokit = createClosedPROctokit();
+      const log = { info: vi.fn(), error: vi.fn() };
+
+      // PR directly closes issue #100 (ready-to-implement)
+      vi.mocked(getLinkedIssues).mockResolvedValueOnce([
+        {
+          number: 100,
+          title: "feature",
+          state: "OPEN",
+          labels: { nodes: [{ name: LABELS.READY_TO_IMPLEMENT }] },
+        },
+      ] as any);
+
+      // No competing PRs
+      vi.mocked(getOpenPRsForIssue).mockResolvedValue([]);
+      // getReadyToImplementParentIssues should NOT be called for issue #100 (it is ready-to-implement itself)
+
+      await handler!({
+        octokit,
+        log,
+        payload: {
+          pull_request: { number: 42, merged: true },
+          repository: {
+            name: "test-repo",
+            full_name: "hivemoot/test-repo",
+            owner: { login: "hivemoot" },
+          },
+        },
+      });
+
+      // Should only close #100 once
+      const closeCalls = octokit.rest.issues.update.mock.calls.filter(
+        (call: [{ issue_number: number; state: string }]) =>
+          call[0].issue_number === 100 && call[0].state === "closed"
+      );
+      expect(closeCalls).toHaveLength(1);
+      // Transitive lookup should not have been called (issue was directly ready-to-implement)
+      expect(vi.mocked(getReadyToImplementParentIssues)).not.toHaveBeenCalled();
     });
   });
 

@@ -406,6 +406,131 @@ async function getCrossReferencedOpenPRs(
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
+// Query: Find ready-to-implement issues that cross-reference a given issue
+// ───────────────────────────────────────────────────────────────────────────────
+
+// Limited to 25 events. Issues with >25 cross-references are rare; this is a
+// transitive close heuristic, not an exhaustive backlink index.
+const GET_REFERENCING_ISSUES_QUERY = `
+  query getReferencingIssues($owner: String!, $repo: String!, $issue: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $issue) {
+        timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 25) {
+          nodes {
+            ... on CrossReferencedEvent {
+              source {
+                ... on Issue {
+                  number
+                  title
+                  state
+                  labels(first: 20) {
+                    nodes {
+                      name
+                    }
+                  }
+                  repository {
+                    owner {
+                      login
+                    }
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+interface ReferencingIssueSource {
+  number?: number;
+  title?: string;
+  state?: "OPEN" | "CLOSED";
+  labels?: {
+    nodes: Array<{ name: string } | null>;
+  };
+  repository?: {
+    owner: {
+      login: string;
+    };
+    name: string;
+  };
+}
+
+interface ReferencingIssuesCrossReferencedEvent {
+  source: ReferencingIssueSource | null;
+}
+
+interface ReferencingIssuesResponse {
+  repository: {
+    issue: {
+      timelineItems: {
+        nodes: Array<ReferencingIssuesCrossReferencedEvent | null>;
+      };
+    } | null;
+  };
+}
+
+/**
+ * Find open issues with `hivemoot:ready-to-implement` that cross-reference the
+ * given issue. Used to detect transitive parent issues when a PR merges via a
+ * sub-issue (e.g., PR closes #341 which is referenced from #322).
+ *
+ * Returns at most 25 candidates (enough for any realistic governance thread).
+ * Filters to the same owner/repo to avoid cross-repo false positives.
+ */
+export async function getReadyToImplementParentIssues(
+  client: GraphQLClient,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  readyToImplementLabel: string
+): Promise<LinkedIssue[]> {
+  const response = await client.graphql<ReferencingIssuesResponse>(
+    GET_REFERENCING_ISSUES_QUERY,
+    { owner, repo, issue: issueNumber }
+  );
+
+  const issue = response.repository.issue;
+  if (!issue) return [];
+
+  return issue.timelineItems.nodes
+    .filter((event): event is ReferencingIssuesCrossReferencedEvent => event !== null)
+    .map((event) => event.source)
+    .filter((source): source is ReferencingIssueSource & {
+      number: number;
+      title: string;
+      state: "OPEN";
+      labels: { nodes: Array<{ name: string } | null> };
+    } => {
+      if (!source || typeof source.number !== "number" || source.state !== "OPEN") {
+        return false;
+      }
+      // Same-repo filter: drop cross-repo references to avoid false positives
+      if (source.repository) {
+        if (
+          source.repository.owner.login.toLowerCase() !== owner.toLowerCase() ||
+          source.repository.name.toLowerCase() !== repo.toLowerCase()
+        ) {
+          return false;
+        }
+      }
+      // Must have the ready-to-implement label
+      return (source.labels?.nodes ?? []).some(
+        (l) => l !== null && l.name === readyToImplementLabel
+      );
+    })
+    .map((source) => ({
+      number: source.number,
+      title: source.title ?? "",
+      state: source.state,
+      labels: source.labels,
+    }));
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 // Mutation: Enable GitHub native auto-merge on a PR
 // ───────────────────────────────────────────────────────────────────────────────
 
