@@ -116,6 +116,26 @@ describe("filterToConfirmedClosingRefs", () => {
     expect(filterToConfirmedClosingRefs(issues(191), body, repository)).toEqual(issues(191));
   });
 
+  it("drops code-block issue when a real prose ref also exists", () => {
+    // The filter's primary value: a PR with Fixes #200 in prose and Fixes #191 only
+    // inside a code block → GitHub returns both; local filter drops 191, keeps 200.
+    const body = [
+      "Fixes #200",
+      "",
+      "Here is example syntax for reference:",
+      "```",
+      "Fixes #191",
+      "```",
+    ].join("\n");
+    expect(filterToConfirmedClosingRefs(issues(191, 200), body, repository)).toEqual(issues(200));
+  });
+
+  it("drops inline-code issue when a real prose ref also exists", () => {
+    // Same as above but using inline code for the example reference.
+    const body = "Fixes #200. Use `Fixes #21` syntax for closing keywords.";
+    expect(filterToConfirmedClosingRefs(issues(21, 200), body, repository)).toEqual(issues(200));
+  });
+
   it("strips inline-code keywords", () => {
     const body = "Use `Fixes #21` in your PR body, not plain text.";
     expect(filterToConfirmedClosingRefs(issues(21), body, repository)).toEqual(issues(21));
