@@ -51,8 +51,12 @@ export async function processPR(
   lastActivityDate: Date
 ): Promise<void> {
   // PRs with merge-ready label are awaiting maintainer action, not abandoned.
-  // Skip stale processing entirely so approved work isn't auto-closed.
+  // Clear any previously applied stale label, then skip further stale processing.
   if (prs.hasLabel(pr, LABELS.MERGE_READY)) {
+    if (prs.hasLabel(pr, LABELS.STALE)) {
+      logger.info(`Removing stale label from merge-ready PR #${pr.number}`);
+      await prs.removeLabel(ref, LABELS.STALE);
+    }
     logger.debug(`PR #${pr.number} has merge-ready label — skipping stale processing`);
     return;
   }

@@ -227,6 +227,25 @@ describe("processPR", () => {
       expect(mockPRs.removeLabel).not.toHaveBeenCalled();
     });
 
+    it("should remove stale label when PR has both merge-ready and stale labels", async () => {
+      // PR was warned before reaching merge-ready — stale label must be cleared
+      const daysInactive = closeThreshold + 5;
+      const pr = {
+        number: 42,
+        labels: [{ name: LABELS.IMPLEMENTATION }, { name: LABELS.MERGE_READY }, { name: LABELS.STALE }],
+      };
+      vi.mocked(mockPRs.hasLabel).mockImplementation(
+        (_pr, label) => label === LABELS.MERGE_READY || label === LABELS.STALE
+      );
+
+      await processPR(mockPRs, testRef, pr, threshold, daysAgo(daysInactive));
+
+      expect(mockPRs.removeLabel).toHaveBeenCalledWith(testRef, LABELS.STALE);
+      expect(mockPRs.close).not.toHaveBeenCalled();
+      expect(mockPRs.comment).not.toHaveBeenCalled();
+      expect(mockPRs.addLabels).not.toHaveBeenCalled();
+    });
+
     it("should skip stale warning when PR has merge-ready label and is at warning threshold", async () => {
       const daysInactive = threshold;
       const pr = {
