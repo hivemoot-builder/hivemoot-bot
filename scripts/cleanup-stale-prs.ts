@@ -50,6 +50,13 @@ export async function processPR(
   staleDays: number,
   lastActivityDate: Date
 ): Promise<void> {
+  // PRs with merge-ready label are awaiting maintainer action, not abandoned.
+  // Skip stale processing entirely so approved work isn't auto-closed.
+  if (prs.hasLabel(pr, LABELS.MERGE_READY)) {
+    logger.debug(`PR #${pr.number} has merge-ready label — skipping stale processing`);
+    return;
+  }
+
   const daysSinceActivity = getDaysSinceActivity(lastActivityDate);
   const threshold = staleDays;
   const closeThreshold = threshold * 2;

@@ -209,6 +209,52 @@ describe("processPR", () => {
     });
   });
 
+  describe("Merge-ready exemption", () => {
+    it("should skip all stale processing when PR has merge-ready label", async () => {
+      // PR is past the close threshold but has merge-ready — should not be closed
+      const daysInactive = closeThreshold + 5;
+      const pr = {
+        number: 42,
+        labels: [{ name: LABELS.IMPLEMENTATION }, { name: LABELS.MERGE_READY }],
+      };
+      vi.mocked(mockPRs.hasLabel).mockImplementation((_pr, label) => label === LABELS.MERGE_READY);
+
+      await processPR(mockPRs, testRef, pr, threshold, daysAgo(daysInactive));
+
+      expect(mockPRs.close).not.toHaveBeenCalled();
+      expect(mockPRs.comment).not.toHaveBeenCalled();
+      expect(mockPRs.addLabels).not.toHaveBeenCalled();
+      expect(mockPRs.removeLabel).not.toHaveBeenCalled();
+    });
+
+    it("should skip stale warning when PR has merge-ready label and is at warning threshold", async () => {
+      const daysInactive = threshold;
+      const pr = {
+        number: 42,
+        labels: [{ name: LABELS.IMPLEMENTATION }, { name: LABELS.MERGE_READY }],
+      };
+      vi.mocked(mockPRs.hasLabel).mockImplementation((_pr, label) => label === LABELS.MERGE_READY);
+
+      await processPR(mockPRs, testRef, pr, threshold, daysAgo(daysInactive));
+
+      expect(mockPRs.addLabels).not.toHaveBeenCalled();
+      expect(mockPRs.comment).not.toHaveBeenCalled();
+    });
+
+    it("should process normally when PR does not have merge-ready label", async () => {
+      const daysInactive = closeThreshold;
+      const pr = {
+        number: 42,
+        labels: [{ name: LABELS.IMPLEMENTATION }, { name: LABELS.STALE }],
+      };
+      vi.mocked(mockPRs.hasLabel).mockImplementation((_pr, label) => label === LABELS.STALE);
+
+      await processPR(mockPRs, testRef, pr, threshold, daysAgo(daysInactive));
+
+      expect(mockPRs.close).toHaveBeenCalled();
+    });
+  });
+
   describe("Edge cases", () => {
     it("should handle PR with 0 days inactive", async () => {
       const pr = {
