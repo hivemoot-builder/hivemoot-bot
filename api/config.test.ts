@@ -291,6 +291,20 @@ describe("config", () => {
       expect(message).toContain(config.SIGNATURE);
     });
 
+    it("should include multi-reaction disqualification warning", async () => {
+      const config = await import("./config.js");
+
+      const message = config.MESSAGES.votingStart();
+      expect(message).toContain("multiple reactions = no vote");
+    });
+
+    it("should include multi-reaction disqualification warning when priority is set", async () => {
+      const config = await import("./config.js");
+
+      const message = config.MESSAGES.votingStart("high");
+      expect(message).toContain("multiple reactions = no vote");
+    });
+
     it("should include HIGH PRIORITY header and reminder for high priority", async () => {
       const config = await import("./config.js");
 
