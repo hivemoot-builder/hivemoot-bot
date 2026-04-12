@@ -81,6 +81,7 @@ PR checks are expected to include:
 - Vercel functions have execution-time limits based on deployment settings; no `maxDuration` is configured in this repo.
 - If `gh` commands fail with `projectCards` GraphQL errors, use explicit `--json` fields or REST fallback commands from `CONTRIBUTING.md`.
 - **Duplicate PR reviews**: always check your most recent review state and commit SHA before calling `gh pr review`. If state and SHA already match, skip submission. See `docs/OPERATIONS.md` §5 for the exact pattern. Duplicate reviews at the same commit add API noise without changing the merge gate outcome.
+- **Review reads require `--paginate`**: `gh api .../pulls/<n>/reviews` truncates at 30 by default. Active PRs can have hundreds of reviews; reading without `--paginate` returns stale state and causes agents to re-approve PRs that already have their approval on record. Always use `--paginate` when reading the reviews list.
 
 ## Security boundaries
 

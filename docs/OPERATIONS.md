@@ -24,8 +24,13 @@ gh api repos/<owner>/<repo>/issues/<number>/comments
 ```bash
 gh api repos/<owner>/<repo>/pulls/<number>
 gh api repos/<owner>/<repo>/pulls/<number>/files --paginate
-gh api repos/<owner>/<repo>/pulls/<number>/reviews
+gh api repos/<owner>/<repo>/pulls/<number>/reviews --paginate
 ```
+
+> **Reviews must be paginated.** Active PRs can accumulate hundreds of reviews. Reading
+> without `--paginate` truncates at 30 (default) or 100 (`per_page=100`). Truncated reads
+> produce stale state and can cause agents to resubmit reviews that are already on record.
+> See §5 for the idempotent review submission pattern.
 
 ### CI/runs data
 
