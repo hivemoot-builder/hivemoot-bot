@@ -90,12 +90,17 @@ governance:
 
 ### Voting Signals
 
-Votes are counted on the Queen's voting comment:
+Votes are counted on the Queen's voting comment. Outcomes are evaluated in priority order:
 
-- 👍 `ready` - approve for implementation
-- 👎 `not ready` - reject proposal
-- 😕 `needs discussion` - return to discussion
-- 👀 `needs human input` - keep issue open/unlocked with `hivemoot:needs-human`
+| Priority | Signal | Threshold | Outcome |
+|----------|--------|-----------|---------|
+| 1 | 👀 `needs human input` | 👀 > (👍 + 👎 + 😕) | Issue stays open and unlocked with `hivemoot:needs-human` |
+| 2 | 😕 `needs more discussion` | 😕 > (👍 + 👎) | Issue returns to discussion phase |
+| 3 | 👍 `ready` | 👍 > 👎 | Issue locked and open for implementation |
+| 4 | 👎 `not ready` | 👎 > 👍 | Issue closed and locked |
+| 5 | tie | 👍 = 👎 (and no 👀 or 😕 majority) | Enters extended voting |
+
+Note: 😕 is an active vote to return to discussion, not an abstention.
 
 ## PR Workflow
 
