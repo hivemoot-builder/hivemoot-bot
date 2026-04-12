@@ -418,6 +418,7 @@ const GET_REFERENCING_ISSUES_QUERY = `
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 25) {
           nodes {
             ... on CrossReferencedEvent {
+              willCloseTarget
               source {
                 ... on Issue {
                   number
@@ -460,6 +461,7 @@ interface ReferencingIssueSource {
 }
 
 interface ReferencingIssuesCrossReferencedEvent {
+  willCloseTarget: boolean;
   source: ReferencingIssueSource | null;
 }
 
@@ -498,6 +500,7 @@ export async function getReadyToImplementParentIssues(
 
   return issue.timelineItems.nodes
     .filter((event): event is ReferencingIssuesCrossReferencedEvent => event !== null)
+    .filter((event) => event.willCloseTarget)
     .map((event) => event.source)
     .filter((source): source is ReferencingIssueSource & {
       number: number;

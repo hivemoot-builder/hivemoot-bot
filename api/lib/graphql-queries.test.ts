@@ -5,6 +5,7 @@ import {
   getOpenPRsForIssue,
   enablePullRequestAutoMerge,
   disablePullRequestAutoMerge,
+  getReadyToImplementParentIssues,
   type GraphQLClient,
 } from "./graphql-queries.js";
 import { logger } from "./logger.js";
@@ -1600,5 +1601,220 @@ describe("disablePullRequestAutoMerge", () => {
     await expect(
       disablePullRequestAutoMerge(mockClient, "PR_kwXYZ")
     ).rejects.toThrow("UNPROCESSABLE");
+  });
+});
+
+describe("getReadyToImplementParentIssues", () => {
+  let mockClient: GraphQLClient;
+
+  const READY_LABEL = "hivemoot:ready-to-implement";
+
+  function makeEvent(
+    willCloseTarget: boolean,
+    source: {
+      number: number;
+      title: string;
+      state: "OPEN" | "CLOSED";
+      labels: string[];
+      owner?: string;
+      repo?: string;
+    } | null
+  ) {
+    return {
+      willCloseTarget,
+      source: source === null ? null : {
+        number: source.number,
+        title: source.title,
+        state: source.state,
+        labels: { nodes: source.labels.map((name) => ({ name })) },
+        repository: {
+          owner: { login: source.owner ?? "acme" },
+          name: source.repo ?? "myrepo",
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockClient = { graphql: vi.fn() };
+  });
+
+  it("returns parent issues whose willCloseTarget is true", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              makeEvent(true, {
+                number: 322,
+                title: "Auto-create onboarding PR",
+                state: "OPEN",
+                labels: [READY_LABEL],
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(322);
+  });
+
+  it("excludes events where willCloseTarget is false (mere mentions)", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              // Plain mention — not a closing reference
+              makeEvent(false, {
+                number: 100,
+                title: "Should not appear",
+                state: "OPEN",
+                labels: [READY_LABEL],
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes sources that lack the ready-to-implement label", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              makeEvent(true, {
+                number: 200,
+                title: "Not a governance issue",
+                state: "OPEN",
+                labels: ["bug"],
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes sources that are not OPEN", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              makeEvent(true, {
+                number: 300,
+                title: "Closed issue",
+                state: "CLOSED",
+                labels: [READY_LABEL],
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes cross-repo sources", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              makeEvent(true, {
+                number: 50,
+                title: "Foreign repo issue",
+                state: "OPEN",
+                labels: [READY_LABEL],
+                owner: "other-org",
+                repo: "other-repo",
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns [] when the issue node is null", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: { issue: null },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 999, READY_LABEL
+    );
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("mixes willCloseTarget true and false — returns only closing references", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        issue: {
+          timelineItems: {
+            nodes: [
+              makeEvent(true, {
+                number: 322,
+                title: "Parent A",
+                state: "OPEN",
+                labels: [READY_LABEL],
+              }),
+              makeEvent(false, {
+                number: 400,
+                title: "Mere mention",
+                state: "OPEN",
+                labels: [READY_LABEL],
+              }),
+              makeEvent(true, {
+                number: 500,
+                title: "Parent B",
+                state: "OPEN",
+                labels: [READY_LABEL],
+              }),
+            ],
+          },
+        },
+      },
+    });
+
+    const result = await getReadyToImplementParentIssues(
+      mockClient, "acme", "myrepo", 341, READY_LABEL
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.number)).toEqual([322, 500]);
   });
 });
