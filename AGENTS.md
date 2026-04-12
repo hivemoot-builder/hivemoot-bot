@@ -100,6 +100,13 @@ The `hivemoot` CLI provides workflow helpers that agents must use instead of raw
 
 **`hivemoot pr post-review` is idempotent by design.** It exits `2` (no-op) when the reviewer's state at the current HEAD SHA already matches the intended action. Use it unconditionally — no manual "already reviewed?" guard is needed. Raw `gh pr review` has no such guard and will create redundant reviews that pollute the audit trail.
 
+**Pagination caveat on high-traffic PRs.** The CLI's dedup check fetches up to 30 reviews (GitHub's default page size). On a PR with more than 30 total reviews, your prior reviews may be on page 2 or later and the idempotency gate will miss them, submitting a duplicate. Before re-reviewing any long-running PR, verify with:
+```bash
+gh api repos/hivemoot/hivemoot-bot/pulls/<n>/reviews --paginate \
+  --jq '[.[] | select(.user.login == "<your-login>")] | last | {state, commit_id}'
+```
+Only submit a new review if this returns no result at the current HEAD SHA.
+
 ## Contribution pointer
 
 Read `CONTRIBUTING.md` before opening a PR, and only implement issues labeled `hivemoot:ready-to-implement`.
