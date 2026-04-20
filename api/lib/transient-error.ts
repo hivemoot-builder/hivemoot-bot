@@ -78,14 +78,19 @@ export function isAutoMergeNotEnabledError(error: unknown): boolean {
 /**
  * Determine whether a GraphQL error means auto-merge is not allowed on this repository.
  *
- * GitHub returns `GraphqlResponseError` with `errors[].type === "FORBIDDEN"`
+ * GitHub is expected to return `GraphqlResponseError` with `errors[].type === "FORBIDDEN"`
  * and a human-readable message containing "not allowed" when
- * `enablePullRequestAutoMerge` is called on a repository without the required
- * branch protection rules. Unlike the "not enabled" case (which is UNPROCESSABLE),
- * the "not allowed" policy block comes back as FORBIDDEN. String-matching the
- * top-level `.message` silently fails because the type identifier lives in
- * `errors[].type`, not in the summary string — the same class of bug fixed for
- * `PullRequestAutoMergeNotEnabled` in #404.
+ * `enablePullRequestAutoMerge` is called on a repository where auto-merge is
+ * disabled in Settings → General → Pull Requests. Unlike the "not enabled" case
+ * (which is UNPROCESSABLE), the "not allowed" policy block is expected to come back
+ * as FORBIDDEN. String-matching the top-level `.message` silently fails because the
+ * type identifier lives in `errors[].type`, not in the summary string — the same
+ * class of bug fixed for `PullRequestAutoMergeNotEnabled` in #404.
+ *
+ * NOTE: FORBIDDEN was inferred from GitHub's GraphQL error taxonomy (policy rejections
+ * vs. validation failures), not observed in a live API response. The double-filter
+ * (type + message) means any schema divergence degrades silently to the same
+ * no-hint behavior as the current broken code — no false positives.
  *
  * Uses the same duck-typing approach as `isAutoMergeNotEnabledError` to avoid
  * `instanceof` failures across multiple installed versions of `@octokit/graphql`.

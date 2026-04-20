@@ -1005,7 +1005,7 @@ describe("evaluateAutomerge — Phase 2 (dryRun: false)", () => {
     });
 
     expect(warnLog).toHaveBeenCalledWith(
-      expect.stringContaining("branch protection rules")
+      expect.stringContaining("Allow auto-merge")
     );
   });
 
