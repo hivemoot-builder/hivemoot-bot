@@ -152,12 +152,17 @@ describe("isAutoMergeNotAllowedError", () => {
       {},
       {
         data: null,
-        errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }],
+        errors: [
+          {
+            message: "Pull request auto merge is not allowed for this repository.",
+            type: "FORBIDDEN",
+          },
+        ],
       }
     );
   }
 
-  it("returns true for a GraphqlResponseError with UNPROCESSABLE type and 'not allowed' message", () => {
+  it("returns true for a GraphqlResponseError with FORBIDDEN type and 'not allowed' message", () => {
     expect(isAutoMergeNotAllowedError(makeNotAllowedError())).toBe(true);
   });
 
@@ -168,11 +173,11 @@ describe("isAutoMergeNotAllowedError", () => {
     expect(isAutoMergeNotAllowedError(new Error("PullRequestAutoMergeNotAllowed"))).toBe(false);
   });
 
-  it("returns false for a GraphqlResponseError with UNPROCESSABLE type but unrelated message", () => {
+  it("returns false for a GraphqlResponseError with FORBIDDEN type but unrelated message", () => {
     const err = new GraphqlResponseError(
       { url: "https://api.github.com/graphql" },
       {},
-      { data: null, errors: [{ message: "Some other validation failure.", type: "UNPROCESSABLE" }] }
+      { data: null, errors: [{ message: "Resource not accessible by integration.", type: "FORBIDDEN" }] }
     );
     expect(isAutoMergeNotAllowedError(err)).toBe(false);
   });
@@ -197,7 +202,12 @@ describe("isAutoMergeNotAllowedError", () => {
   it("returns true for a cross-version instance (duck-typed, not instanceof)", () => {
     const foreignError = Object.assign(new Error("Request failed"), {
       name: "GraphqlResponseError",
-      errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }],
+      errors: [
+        {
+          message: "Pull request auto merge is not allowed for this repository.",
+          type: "FORBIDDEN",
+        },
+      ],
     });
     expect(isAutoMergeNotAllowedError(foreignError)).toBe(true);
   });
@@ -205,7 +215,7 @@ describe("isAutoMergeNotAllowedError", () => {
   it("returns false for a cross-version instance with a non-matching error type", () => {
     const foreignError = Object.assign(new Error("Request failed"), {
       name: "GraphqlResponseError",
-      errors: [{ message: "Auto merge is not allowed.", type: "FORBIDDEN" }],
+      errors: [{ message: "Auto merge is not allowed.", type: "UNPROCESSABLE" }],
     });
     expect(isAutoMergeNotAllowedError(foreignError)).toBe(false);
   });

@@ -940,7 +940,15 @@ describe("evaluateAutomerge — Phase 2 (dryRun: false)", () => {
         new GraphqlResponseError(
           { url: "https://api.github.com/graphql" },
           {},
-          { data: null, errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }] }
+          {
+            data: null,
+            errors: [
+              {
+                message: "Pull request auto merge is not allowed for this repository.",
+                type: "FORBIDDEN",
+              },
+            ],
+          }
         )
       ),
     };
@@ -973,7 +981,15 @@ describe("evaluateAutomerge — Phase 2 (dryRun: false)", () => {
         new GraphqlResponseError(
           { url: "https://api.github.com/graphql" },
           {},
-          { data: null, errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }] }
+          {
+            data: null,
+            errors: [
+              {
+                message: "Pull request auto merge is not allowed for this repository.",
+                type: "FORBIDDEN",
+              },
+            ],
+          }
         )
       ),
     };
