@@ -685,6 +685,51 @@ interface PhaseConfig {
 }
 
 /**
+ * For repos with manual voting exits: scan open voting-phase issues and call
+ * checkManualVotingOutcome on each. Adds/removes hivemoot:awaiting-admin as a
+ * signal to maintainers without auto-transitioning the issue.
+ */
+async function checkManualVotingIssues(
+  octokit: InstanceType<typeof Octokit>,
+  owner: string,
+  repoName: string,
+  installationId: number | undefined,
+  issues: IssueOperations,
+  governance: GovernanceService,
+): Promise<void> {
+  const seen = new Set<number>();
+
+  for (const alias of getLabelQueryAliases(LABELS.VOTING)) {
+    const iterator = octokit.paginate.iterator(
+      octokit.rest.issues.listForRepo,
+      {
+        owner,
+        repo: repoName,
+        state: "open",
+        labels: alias,
+        per_page: 100,
+      }
+    );
+
+    for await (const { data: page } of iterator) {
+      for (const issue of page as Issue[]) {
+        if ("pull_request" in issue) continue;
+        if (seen.has(issue.number)) continue;
+        seen.add(issue.number);
+        const ref = createIssueRef(owner, repoName, issue.number, installationId);
+        try {
+          await governance.checkManualVotingOutcome(ref);
+        } catch (error) {
+          logger.error(
+            `[${owner}/${repoName}#${issue.number}] Failed manual voting outcome check: ${String(error)}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
  * Paginate through issues with a given label and process each through
  * the phase transition pipeline. Queries both canonical and legacy label
  * names to catch entities carrying either old or new labels.
@@ -906,7 +951,8 @@ export async function processRepository(
         earlyCheck: makeEarlyDecisionCheck((ref, opts) => governance.endVoting(ref, opts), votingEarlyDecisionDeps),
       });
     } else {
-      logger.info(`[${repo.full_name}] voting exits are manual; skipping automatic voting transitions`);
+      logger.info(`[${repo.full_name}] voting exits are manual; checking vote tally for awaiting-admin signal`);
+      await checkManualVotingIssues(octokit, owner, repoName, installationId, issues, governance);
     }
 
     const extendedAutoExits = extendedVoting.exits.filter(isAutoVotingExit);

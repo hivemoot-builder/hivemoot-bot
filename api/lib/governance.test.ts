@@ -1082,6 +1082,93 @@ describe("GovernanceService", () => {
       expect(callArgs.comment).not.toContain("0 of");
     });
   });
+
+  describe("checkManualVotingOutcome", () => {
+    it("returns 'skipped' when voting comment is not found", async () => {
+      vi.mocked(mockIssues.findVotingCommentId).mockResolvedValue(null);
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+      expect(outcome).toBe("skipped");
+      expect(mockIssues.addLabels).not.toHaveBeenCalled();
+      expect(mockIssues.comment).not.toHaveBeenCalled();
+    });
+
+    it("adds AWAITING_ADMIN label and posts comment when votes favour ready-to-implement", async () => {
+      vi.mocked(mockIssues.getValidatedVoteCounts).mockResolvedValue({
+        votes: { thumbsUp: 3, thumbsDown: 1, confused: 0, eyes: 0 },
+        voters: ["a", "b", "c", "d"],
+        participants: ["a", "b", "c", "d"],
+      });
+      vi.mocked(mockIssues.getIssueLabels).mockResolvedValue([LABELS.VOTING]);
+
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+
+      expect(outcome).toBe("ready-to-implement");
+      expect(mockIssues.addLabels).toHaveBeenCalledWith(testRef, [LABELS.AWAITING_ADMIN]);
+      expect(mockIssues.comment).toHaveBeenCalledOnce();
+      const body = vi.mocked(mockIssues.comment).mock.calls[0][1];
+      expect(body).toContain("Awaiting Admin Action");
+      expect(body).toContain(LABELS.AWAITING_ADMIN);
+    });
+
+    it("is idempotent: skips label and comment when AWAITING_ADMIN already present", async () => {
+      vi.mocked(mockIssues.getValidatedVoteCounts).mockResolvedValue({
+        votes: { thumbsUp: 3, thumbsDown: 1, confused: 0, eyes: 0 },
+        voters: ["a", "b", "c", "d"],
+        participants: ["a", "b", "c", "d"],
+      });
+      vi.mocked(mockIssues.getIssueLabels).mockResolvedValue([LABELS.VOTING, LABELS.AWAITING_ADMIN]);
+
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+
+      expect(outcome).toBe("ready-to-implement");
+      expect(mockIssues.addLabels).not.toHaveBeenCalled();
+      expect(mockIssues.comment).not.toHaveBeenCalled();
+    });
+
+    it("removes AWAITING_ADMIN when outcome shifts away from ready-to-implement", async () => {
+      vi.mocked(mockIssues.getValidatedVoteCounts).mockResolvedValue({
+        votes: { thumbsUp: 1, thumbsDown: 3, confused: 0, eyes: 0 },
+        voters: ["a", "b", "c", "d"],
+        participants: ["a", "b", "c", "d"],
+      });
+      vi.mocked(mockIssues.getIssueLabels).mockResolvedValue([LABELS.VOTING, LABELS.AWAITING_ADMIN]);
+
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+
+      expect(outcome).toBe("rejected");
+      expect(mockIssues.removeLabel).toHaveBeenCalledWith(testRef, LABELS.AWAITING_ADMIN);
+      expect(mockIssues.addLabels).not.toHaveBeenCalled();
+    });
+
+    it("does not add AWAITING_ADMIN when outcome is 'rejected'", async () => {
+      vi.mocked(mockIssues.getValidatedVoteCounts).mockResolvedValue({
+        votes: { thumbsUp: 1, thumbsDown: 3, confused: 0, eyes: 0 },
+        voters: ["a", "b", "c", "d"],
+        participants: ["a", "b", "c", "d"],
+      });
+      vi.mocked(mockIssues.getIssueLabels).mockResolvedValue([LABELS.VOTING]);
+
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+
+      expect(outcome).toBe("rejected");
+      expect(mockIssues.addLabels).not.toHaveBeenCalled();
+      expect(mockIssues.comment).not.toHaveBeenCalled();
+    });
+
+    it("does not add AWAITING_ADMIN when outcome is 'inconclusive'", async () => {
+      vi.mocked(mockIssues.getValidatedVoteCounts).mockResolvedValue({
+        votes: { thumbsUp: 2, thumbsDown: 2, confused: 0, eyes: 0 },
+        voters: ["a", "b", "c", "d"],
+        participants: ["a", "b", "c", "d"],
+      });
+      vi.mocked(mockIssues.getIssueLabels).mockResolvedValue([LABELS.VOTING]);
+
+      const outcome = await governance.checkManualVotingOutcome(testRef);
+
+      expect(outcome).toBe("inconclusive");
+      expect(mockIssues.addLabels).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("isUnanimous", () => {

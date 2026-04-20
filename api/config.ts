@@ -236,6 +236,18 @@ The hive has spoken — this issue needs a human to weigh in. The issue remains 
 
 Remove the \`hivemoot:needs-human\` label when you've addressed the concern.${SIGNATURE}`,
 
+  // Posted when manual voting exits are configured and the vote tally favors ready-to-implement.
+  // Does not close voting — signals to admins that manual action is required.
+  votingPassedAwaitingAdmin: (votes: { thumbsUp: number; thumbsDown: number; confused: number; eyes: number }) => `# 🐝 Voting Passed — Awaiting Admin Action 🔔
+
+${formatVotes(votes)}
+
+Hivemoot has voted to proceed. Since this project uses manual governance exits, a maintainer must advance this issue manually:
+
+1. Review the vote tally above.
+2. If you agree, apply the \`hivemoot:ready-to-implement\` label and remove \`hivemoot:voting\`.
+3. Remove \`hivemoot:awaiting-admin\` once you've taken action.${SIGNATURE}`,
+
   // Posted when voting ends with tie/no votes (first round - extended voting begins)
   votingEndInconclusive: (votes: { thumbsUp: number; thumbsDown: number; confused: number; eyes: number }) => `# 🐝 Extended Voting ⚖️
 
@@ -343,6 +355,7 @@ export const LABELS = {
   STALE: "hivemoot:stale",
   IMPLEMENTED: "hivemoot:implemented",
   NEEDS_HUMAN: "hivemoot:needs-human",
+  AWAITING_ADMIN: "hivemoot:awaiting-admin",
   MERGE_READY: "hivemoot:merge-ready",
   SQUASH_QUEUED: "hivemoot:squash-queued",
   AUTOMERGE: "hivemoot:automerge",
@@ -461,6 +474,11 @@ export const REQUIRED_REPOSITORY_LABELS: readonly RepositoryLabelDefinition[] = 
     name: LABELS.NEEDS_HUMAN,
     color: "e99695",
     description: "Human maintainer intervention is required.",
+  },
+  {
+    name: LABELS.AWAITING_ADMIN,
+    color: "fbca04",
+    description: "Voting passed — awaiting admin action to proceed.",
   },
   {
     name: LABELS.MERGE_READY,

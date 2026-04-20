@@ -513,6 +513,54 @@ export class GovernanceService {
   }
 
   /**
+   * Check current vote tally for an issue in manual-exit voting and signal
+   * if the outcome would be "ready-to-implement".
+   *
+   * This does NOT transition the issue or remove hivemoot:voting. Instead it
+   * adds/removes hivemoot:awaiting-admin as a signal to maintainers that the
+   * vote has cleared and manual action is required.
+   *
+   * Idempotent: adds the label and comment only when first reaching a positive
+   * outcome. Removes the label if a previously positive outcome shifts (e.g.
+   * more votes come in and the tally changes).
+   *
+   * Returns "skipped" when the voting comment is not found.
+   */
+  async checkManualVotingOutcome(ref: IssueRef): Promise<VotingOutcome> {
+    const commentId = await this.issues.findVotingCommentId(ref);
+
+    if (!commentId) {
+      this.logger.info(
+        `Issue #${ref.issueNumber}: voting comment not found, skipping manual outcome check`,
+      );
+      return "skipped";
+    }
+
+    const validated = await this.issues.getValidatedVoteCounts(ref, commentId);
+    const outcome = this.determineOutcome(validated.votes);
+
+    const currentLabels = await this.issues.getIssueLabels(ref);
+    const hasSignalLabel = currentLabels.includes(LABELS.AWAITING_ADMIN);
+
+    if (outcome === "ready-to-implement") {
+      if (!hasSignalLabel) {
+        await this.issues.addLabels(ref, [LABELS.AWAITING_ADMIN]);
+        await this.issues.comment(ref, MESSAGES.votingPassedAwaitingAdmin(validated.votes));
+        this.logger.info(
+          `Issue #${ref.issueNumber}: voting passed in manual mode — added ${LABELS.AWAITING_ADMIN}`,
+        );
+      }
+    } else if (hasSignalLabel) {
+      await this.issues.removeLabel(ref, LABELS.AWAITING_ADMIN);
+      this.logger.info(
+        `Issue #${ref.issueNumber}: outcome is ${outcome}, removed ${LABELS.AWAITING_ADMIN}`,
+      );
+    }
+
+    return outcome;
+  }
+
+  /**
    * Apply a transition with the given configuration.
    * Centralizes the transition options construction to reduce duplication.
    */
