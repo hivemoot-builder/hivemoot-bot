@@ -936,7 +936,13 @@ describe("evaluateAutomerge — Phase 2 (dryRun: false)", () => {
     const config = makeConfig({ dryRun: false });
     const prs = makeEligiblePROperations();
     const mockGraphQL = {
-      graphql: vi.fn().mockRejectedValue(new Error("PullRequestAutoMergeNotAllowed")),
+      graphql: vi.fn().mockRejectedValue(
+        new GraphqlResponseError(
+          { url: "https://api.github.com/graphql" },
+          {},
+          { data: null, errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }] }
+        )
+      ),
     };
     const warnLog = vi.fn();
 
@@ -958,7 +964,36 @@ describe("evaluateAutomerge — Phase 2 (dryRun: false)", () => {
     );
   });
 
-  it("includes branch protection hint only for PullRequestAutoMergeNotAllowed", async () => {
+  it("includes branch protection hint for PullRequestAutoMergeNotAllowed GraphqlResponseError", async () => {
+    const config = makeConfig({ dryRun: false });
+    const prs = makeEligiblePROperations();
+    const warnLog = vi.fn();
+    const mockGraphQL = {
+      graphql: vi.fn().mockRejectedValue(
+        new GraphqlResponseError(
+          { url: "https://api.github.com/graphql" },
+          {},
+          { data: null, errors: [{ message: "Pull request Auto merge is not allowed.", type: "UNPROCESSABLE" }] }
+        )
+      ),
+    };
+
+    await evaluateAutomerge({
+      prs,
+      ref: baseRef,
+      config,
+      trustedReviewers,
+      graphql: mockGraphQL,
+      log: { info: vi.fn(), warn: warnLog },
+      mergeable: true,
+    });
+
+    expect(warnLog).toHaveBeenCalledWith(
+      expect.stringContaining("branch protection rules")
+    );
+  });
+
+  it("omits branch protection hint for unrelated errors", async () => {
     const config = makeConfig({ dryRun: false });
     const prs = makeEligiblePROperations();
     const warnLog = vi.fn();

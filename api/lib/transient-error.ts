@@ -74,3 +74,35 @@ export function isAutoMergeNotEnabledError(error: unknown): boolean {
       /not enabled/i.test(String((e as { message?: unknown }).message ?? ""))
   );
 }
+
+/**
+ * Determine whether a GraphQL error means auto-merge is not allowed on this repository.
+ *
+ * GitHub returns `GraphqlResponseError` with `errors[].type === "UNPROCESSABLE"`
+ * and a human-readable message containing "not allowed" when
+ * `enablePullRequestAutoMerge` is called on a repository without the required
+ * branch protection rules. String-matching the top-level `.message` silently fails
+ * because the type identifier lives in `errors[].type`, not in the summary string —
+ * the same class of bug fixed for `PullRequestAutoMergeNotEnabled` in #404.
+ *
+ * Uses the same duck-typing approach as `isAutoMergeNotEnabledError` to avoid
+ * `instanceof` failures across multiple installed versions of `@octokit/graphql`.
+ */
+export function isAutoMergeNotAllowedError(error: unknown): boolean {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    (error as { name?: unknown }).name !== "GraphqlResponseError"
+  ) {
+    return false;
+  }
+  const errors = (error as { errors?: unknown }).errors;
+  if (!Array.isArray(errors)) return false;
+  return errors.some(
+    (e: unknown) =>
+      typeof e === "object" &&
+      e !== null &&
+      (e as { type?: unknown }).type === "UNPROCESSABLE" &&
+      /not allowed/i.test(String((e as { message?: unknown }).message ?? ""))
+  );
+}
