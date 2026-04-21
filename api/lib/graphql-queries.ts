@@ -1,10 +1,10 @@
 /**
  * GraphQL Queries for PR-Issue Linking
  *
- * Uses GitHub's GraphQL API to efficiently query PR-issue relationships.
- * This is preferred over parsing PR body text because GitHub's native
- * linking (via "fixes #123" keywords) is more reliable and handles
- * cross-repo references automatically.
+ * Uses GitHub's GraphQL API to query PR-issue relationships via
+ * closingIssuesReferences. The PR body is fetched alongside to filter
+ * false positives: GitHub parses closing keywords inside code fences and
+ * blockquotes, but those don't reflect genuine intent to close the issue.
  */
 
 import type { LinkedIssue, PullRequest } from "./types.js";
@@ -29,6 +29,7 @@ const GET_LINKED_ISSUES_QUERY = `
   query getLinkedIssues($owner: String!, $repo: String!, $pr: Int!) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
+        body
         closingIssuesReferences(first: 10) {
           nodes {
             number
@@ -49,6 +50,7 @@ const GET_LINKED_ISSUES_QUERY = `
 interface LinkedIssuesResponse {
   repository: {
     pullRequest: {
+      body: string | null;
       closingIssuesReferences: {
         nodes: Array<LinkedIssue | null>;
       };
@@ -57,8 +59,35 @@ interface LinkedIssuesResponse {
 }
 
 /**
+ * Return true if the PR body contains a closing keyword for issueNumber
+ * outside of fenced code blocks, inline code, and blockquotes.
+ *
+ * When body is null/undefined we have no signal — trust the API result.
+ */
+export function hasExplicitClosingReference(
+  body: string | null | undefined,
+  issueNumber: number
+): boolean {
+  if (!body) return true;
+
+  // Strip fenced code blocks (``` ... ```) including language tags
+  let cleaned = body.replace(/```[\s\S]*?```/g, "");
+  // Strip inline code (`...`)
+  cleaned = cleaned.replace(/`[^`\n]*`/g, "");
+  // Strip blockquote lines (> ...)
+  cleaned = cleaned.replace(/^>.*$/gm, "");
+
+  const pattern = new RegExp(
+    `(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#${issueNumber}\\b`,
+    "i"
+  );
+  return pattern.test(cleaned);
+}
+
+/**
  * Get issues that will be closed when a PR is merged.
- * Uses GitHub's closingIssuesReferences which parses "fixes #123" etc.
+ * Uses GitHub's closingIssuesReferences, then filters out false positives
+ * where the closing keyword only appears in code blocks or blockquotes.
  */
 export async function getLinkedIssues(
   client: GraphQLClient,
@@ -71,11 +100,20 @@ export async function getLinkedIssues(
     { owner, repo, pr: prNumber }
   );
 
-  return (
-    response.repository.pullRequest?.closingIssuesReferences.nodes.filter(
-      (node): node is LinkedIssue => node !== null
-    ) ?? []
-  );
+  const pr = response.repository.pullRequest;
+  if (!pr) return [];
+
+  return pr.closingIssuesReferences.nodes
+    .filter((node): node is LinkedIssue => node !== null)
+    .filter((issue) => {
+      if (!hasExplicitClosingReference(pr.body, issue.number)) {
+        logger.info(
+          `Skipping issue #${issue.number}: closing reference only found in code block or blockquote`
+        );
+        return false;
+      }
+      return true;
+    });
 }
 
 // ───────────────────────────────────────────────────────────────────────────────

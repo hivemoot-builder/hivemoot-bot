@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   getLinkedIssues,
+  hasExplicitClosingReference,
   getPRBodyLastEditedAt,
   getOpenPRsForIssue,
   enablePullRequestAutoMerge,
@@ -190,6 +191,162 @@ describe("getLinkedIssues", () => {
     const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
 
     expect(result[0].labels.nodes).toHaveLength(3);
+  });
+
+  it("should filter issue whose closing keyword only appears in a fenced code block", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        pullRequest: {
+          body: "Here's an example:\n```\nCloses #123\n```\nThis PR does not actually close it.",
+          closingIssuesReferences: {
+            nodes: [{ number: 123, title: "Bug", state: "OPEN", labels: { nodes: [] } }],
+          },
+        },
+      },
+    });
+
+    const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
+
+    expect(result).toEqual([]);
+  });
+
+  it("should filter issue whose closing keyword only appears in a blockquote", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        pullRequest: {
+          body: "Describing the problem:\n> Closes #456\n\nSee above.",
+          closingIssuesReferences: {
+            nodes: [{ number: 456, title: "Feature", state: "OPEN", labels: { nodes: [] } }],
+          },
+        },
+      },
+    });
+
+    const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
+
+    expect(result).toEqual([]);
+  });
+
+  it("should keep issue whose closing keyword appears outside code blocks", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        pullRequest: {
+          body: "Fixes #789\n\nSome implementation details.",
+          closingIssuesReferences: {
+            nodes: [{ number: 789, title: "Issue", state: "OPEN", labels: { nodes: [] } }],
+          },
+        },
+      },
+    });
+
+    const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(789);
+  });
+
+  it("should keep issue mentioned in both code block and real text", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        pullRequest: {
+          body: "For example: ```Closes #100``` — and this PR actually closes #100.",
+          closingIssuesReferences: {
+            nodes: [{ number: 100, title: "Issue", state: "OPEN", labels: { nodes: [] } }],
+          },
+        },
+      },
+    });
+
+    const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("should trust API when body is null (no filtering)", async () => {
+    vi.mocked(mockClient.graphql).mockResolvedValue({
+      repository: {
+        pullRequest: {
+          body: null,
+          closingIssuesReferences: {
+            nodes: [{ number: 321, title: "Issue", state: "OPEN", labels: { nodes: [] } }],
+          },
+        },
+      },
+    });
+
+    const result = await getLinkedIssues(mockClient, "owner", "repo", 42);
+
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe("hasExplicitClosingReference", () => {
+  it("should return true for null body", () => {
+    expect(hasExplicitClosingReference(null, 123)).toBe(true);
+  });
+
+  it("should return true for undefined body", () => {
+    expect(hasExplicitClosingReference(undefined, 123)).toBe(true);
+  });
+
+  it("should return true for plain closing keyword", () => {
+    expect(hasExplicitClosingReference("Fixes #42", 42)).toBe(true);
+    expect(hasExplicitClosingReference("Closes #42", 42)).toBe(true);
+    expect(hasExplicitClosingReference("Resolves #42", 42)).toBe(true);
+    expect(hasExplicitClosingReference("close #42", 42)).toBe(true);
+    expect(hasExplicitClosingReference("fixed #42", 42)).toBe(true);
+    expect(hasExplicitClosingReference("resolved #42", 42)).toBe(true);
+  });
+
+  it("should return false when keyword is only in a fenced code block", () => {
+    expect(
+      hasExplicitClosingReference("Example:\n```\nFixes #42\n```", 42)
+    ).toBe(false);
+  });
+
+  it("should return false when keyword is only in inline code", () => {
+    expect(
+      hasExplicitClosingReference("Like `Fixes #42` in the template.", 42)
+    ).toBe(false);
+  });
+
+  it("should return false when keyword is only in a blockquote", () => {
+    expect(
+      hasExplicitClosingReference("> Fixes #42\n\nSee quoted text above.", 42)
+    ).toBe(false);
+  });
+
+  it("should return true when keyword appears outside and inside code block", () => {
+    expect(
+      hasExplicitClosingReference("Fixes #42\n```\nFixes #42\n```", 42)
+    ).toBe(true);
+  });
+
+  it("should not match a different issue number", () => {
+    expect(hasExplicitClosingReference("Fixes #99", 42)).toBe(false);
+  });
+
+  it("should not match a number that is a prefix of another (word boundary)", () => {
+    expect(hasExplicitClosingReference("Fixes #420", 42)).toBe(false);
+  });
+
+  it("should handle multi-line fenced code blocks correctly", () => {
+    const body = `
+Some text before.
+
+\`\`\`markdown
+closes #10
+fixes #10
+\`\`\`
+
+Some text after, no real closing reference.
+`;
+    expect(hasExplicitClosingReference(body, 10)).toBe(false);
+  });
+
+  it("should handle fenced blocks with language specifier", () => {
+    const body = "```typescript\nthrow new Error('Closes #55');\n```";
+    expect(hasExplicitClosingReference(body, 55)).toBe(false);
   });
 });
 
