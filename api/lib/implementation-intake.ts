@@ -236,7 +236,8 @@ async function fetchApprovalScores(
 /**
  * Request up to `count` trusted reviewers on a candidate PR.
  *
- * Skips reviewers already requested, excludes the PR author, and short-circuits
+ * Skips reviewers already requested, excludes the PR author, pre-filters
+ * non-collaborators (prevents 422 on batch request), and short-circuits
  * when enough trusted reviewers are already requested.
  */
 export async function autoRequestTrustedReviewers(params: {
@@ -247,7 +248,8 @@ export async function autoRequestTrustedReviewers(params: {
   count: number;
   log: { info: (msg: string) => void; warn: (msg: string) => void };
 }): Promise<void> {
-  const { prs, ref, prAuthor, trustedReviewers, count, log } = params;
+  const { prs, ref, trustedReviewers, count, log } = params;
+  const prAuthor = params.prAuthor.toLowerCase();
 
   if (trustedReviewers.length === 0 || count <= 0) {
     return;
@@ -262,9 +264,23 @@ export async function autoRequestTrustedReviewers(params: {
     return;
   }
 
-  const eligible = trustedReviewers.filter(r => r !== prAuthor && !alreadyRequested.has(r));
-  const toRequest = eligible.slice(0, remaining);
+  const candidates = trustedReviewers.filter(r => r !== prAuthor && !alreadyRequested.has(r));
+  if (candidates.length === 0) {
+    log.info(`PR #${ref.prNumber}: no eligible trusted reviewers available to request`);
+    return;
+  }
 
+  const repoRef = { owner: ref.owner, repo: ref.repo };
+  const collaboratorChecks = await Promise.all(
+    candidates.map(async r => ({ login: r, ok: await prs.isCollaborator(repoRef, r) }))
+  );
+  const nonCollaborators = collaboratorChecks.filter(c => !c.ok).map(c => c.login);
+  if (nonCollaborators.length > 0) {
+    log.warn(`PR #${ref.prNumber}: skipping non-collaborator trusted reviewer(s): ${nonCollaborators.join(", ")}`);
+  }
+  const eligible = collaboratorChecks.filter(c => c.ok).map(c => c.login);
+
+  const toRequest = eligible.slice(0, remaining);
   if (toRequest.length === 0) {
     log.info(`PR #${ref.prNumber}: no eligible trusted reviewers available to request`);
     return;

@@ -215,6 +215,11 @@ export interface PRClient {
           }>;
         };
       }>;
+      checkCollaborator: (params: {
+        owner: string;
+        repo: string;
+        username: string;
+      }) => Promise<unknown>;
     };
   };
 }
@@ -867,6 +872,19 @@ export class PROperations {
       repo: ref.repo,
       pull_number: ref.prNumber,
     });
-    return new Set(data.users.map((u) => u.login));
+    return new Set(data.users.map((u) => u.login.toLowerCase()));
+  }
+
+  async isCollaborator(ref: { owner: string; repo: string }, login: string): Promise<boolean> {
+    try {
+      await this.client.rest.repos.checkCollaborator({
+        owner: ref.owner,
+        repo: ref.repo,
+        username: login,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

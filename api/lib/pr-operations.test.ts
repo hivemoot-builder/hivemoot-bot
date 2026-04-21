@@ -258,6 +258,7 @@ describe("PROperations", () => {
         },
         repos: {
           getCombinedStatusForRef: vi.fn().mockResolvedValue({ data: { state: "pending", total_count: 0, statuses: [] } }),
+          checkCollaborator: vi.fn().mockResolvedValue({}),
         },
       },
     } as unknown as PRClient;
@@ -1428,6 +1429,19 @@ describe("PROperations", () => {
       });
     });
 
+    it("should normalize logins to lowercase so comparisons against config are safe", async () => {
+      vi.mocked(mockClient.rest.pulls.listRequestedReviewers).mockResolvedValue({
+        data: {
+          users: [{ login: "Alice" }, { login: "BOB" }],
+          teams: [],
+        },
+      });
+
+      const result = await prOps.getRequestedReviewerLogins(testRef);
+
+      expect(result).toEqual(new Set(["alice", "bob"]));
+    });
+
     it("should return an empty Set when no reviewers are requested", async () => {
       vi.mocked(mockClient.rest.pulls.listRequestedReviewers).mockResolvedValue({
         data: { users: [], teams: [] },
@@ -1436,6 +1450,33 @@ describe("PROperations", () => {
       const result = await prOps.getRequestedReviewerLogins(testRef);
 
       expect(result).toEqual(new Set());
+    });
+  });
+
+  describe("isCollaborator", () => {
+    const repoRef = { owner: "test-org", repo: "test-repo" };
+
+    it("should return true when the API succeeds (user is a collaborator)", async () => {
+      vi.mocked(mockClient.rest.repos.checkCollaborator).mockResolvedValue({});
+
+      const result = await prOps.isCollaborator(repoRef, "alice");
+
+      expect(result).toBe(true);
+      expect(mockClient.rest.repos.checkCollaborator).toHaveBeenCalledWith({
+        owner: "test-org",
+        repo: "test-repo",
+        username: "alice",
+      });
+    });
+
+    it("should return false when the API throws (user is not a collaborator)", async () => {
+      vi.mocked(mockClient.rest.repos.checkCollaborator).mockRejectedValue(
+        Object.assign(new Error("Not Found"), { status: 404 })
+      );
+
+      const result = await prOps.isCollaborator(repoRef, "ghost");
+
+      expect(result).toBe(false);
     });
   });
 });

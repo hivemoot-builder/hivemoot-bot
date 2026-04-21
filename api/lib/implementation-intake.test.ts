@@ -1427,9 +1427,12 @@ describe("Leaderboard race condition fix", () => {
 describe("autoRequestTrustedReviewers", () => {
   const makeRef = () => ({ owner: "hivemoot", repo: "colony", prNumber: 101 });
 
-  const makePrs = (requestedLogins: string[] = []) => ({
+  const makePrs = (requestedLogins: string[] = [], nonCollaborators: string[] = []) => ({
     getRequestedReviewerLogins: vi.fn().mockResolvedValue(new Set(requestedLogins)),
     requestReviewers: vi.fn().mockResolvedValue(undefined),
+    isCollaborator: vi.fn().mockImplementation((_ref: unknown, login: string) =>
+      Promise.resolve(!nonCollaborators.includes(login))
+    ),
   });
 
   const makeLog = () => ({ info: vi.fn(), warn: vi.fn() });
@@ -1527,6 +1530,49 @@ describe("autoRequestTrustedReviewers", () => {
     expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["alice"]);
   });
 
+  it("normalizes prAuthor case so mixed-case API login doesn't bypass exclusion", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "Alice", // GitHub API returns mixed-case; trustedReviewers are lowercased
+      trustedReviewers: ["alice", "bob"],
+      count: 2,
+      log: makeLog(),
+    });
+    // "alice" should be excluded as the author, only "bob" requested
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["bob"]);
+  });
+
+  it("skips non-collaborators to avoid 422 and logs a warning", async () => {
+    const log = makeLog();
+    const prs = makePrs([], ["carol"]); // carol is not a collaborator
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice", "carol"],
+      count: 2,
+      log,
+    });
+    // carol filtered out; only alice requested
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["alice"]);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("carol"));
+  });
+
+  it("makes no request when all eligible reviewers are non-collaborators", async () => {
+    const prs = makePrs([], ["alice", "bob"]); // both non-collaborators
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice", "bob"],
+      count: 2,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).not.toHaveBeenCalled();
+  });
+
   it("requests reviewers after intake labels candidate PR when reviewRequests configured", async () => {
     const readyIssue: LinkedIssue = {
       number: 7,
@@ -1545,6 +1591,7 @@ describe("autoRequestTrustedReviewers", () => {
 
     const requestReviewers = vi.fn().mockResolvedValue(undefined);
     const getRequestedReviewerLogins = vi.fn().mockResolvedValue(new Set<string>());
+    const isCollaborator = vi.fn().mockResolvedValue(true);
 
     const prs = {
       get: vi.fn().mockResolvedValue({
@@ -1560,6 +1607,7 @@ describe("autoRequestTrustedReviewers", () => {
       hasNotificationComment: vi.fn().mockResolvedValue(false),
       requestReviewers,
       getRequestedReviewerLogins,
+      isCollaborator,
     };
 
     const mockOctokit = {
@@ -1631,6 +1679,7 @@ describe("autoRequestTrustedReviewers", () => {
 
     const requestReviewers = vi.fn().mockResolvedValue(undefined);
     const getRequestedReviewerLogins = vi.fn().mockResolvedValue(new Set<string>());
+    const isCollaborator = vi.fn().mockResolvedValue(true);
 
     const prs = {
       get: vi.fn().mockResolvedValue({
@@ -1646,6 +1695,7 @@ describe("autoRequestTrustedReviewers", () => {
       hasNotificationComment: vi.fn().mockResolvedValue(false),
       requestReviewers,
       getRequestedReviewerLogins,
+      isCollaborator,
     };
 
     const mockOctokit = {
