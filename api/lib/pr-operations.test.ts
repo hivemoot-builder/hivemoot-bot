@@ -240,6 +240,10 @@ describe("PROperations", () => {
           listCommits: vi.fn().mockResolvedValue({ data: [] }),
           listReviewComments: vi.fn().mockResolvedValue({ data: [] }),
           listFiles: vi.fn().mockResolvedValue({ data: [] }),
+          requestReviewers: vi.fn().mockResolvedValue({}),
+          listRequestedReviewers: vi.fn().mockResolvedValue({
+            data: { users: [], teams: [] },
+          }),
         },
         issues: {
           get: vi.fn().mockResolvedValue({ data: { labels: [] } }),
@@ -1383,6 +1387,55 @@ describe("PROperations", () => {
 
       expect(result).toEqual([]);
       expect(mockClient.rest.pulls.listFiles).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("requestReviewers", () => {
+    it("should call the API with the given reviewers", async () => {
+      await prOps.requestReviewers(testRef, ["alice", "bob"]);
+
+      expect(mockClient.rest.pulls.requestReviewers).toHaveBeenCalledWith({
+        owner: "test-org",
+        repo: "test-repo",
+        pull_number: 42,
+        reviewers: ["alice", "bob"],
+      });
+    });
+
+    it("should skip the API call when reviewer list is empty", async () => {
+      await prOps.requestReviewers(testRef, []);
+
+      expect(mockClient.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getRequestedReviewerLogins", () => {
+    it("should return a Set of user logins from the API response", async () => {
+      vi.mocked(mockClient.rest.pulls.listRequestedReviewers).mockResolvedValue({
+        data: {
+          users: [{ login: "alice" }, { login: "bob" }],
+          teams: [],
+        },
+      });
+
+      const result = await prOps.getRequestedReviewerLogins(testRef);
+
+      expect(result).toEqual(new Set(["alice", "bob"]));
+      expect(mockClient.rest.pulls.listRequestedReviewers).toHaveBeenCalledWith({
+        owner: "test-org",
+        repo: "test-repo",
+        pull_number: 42,
+      });
+    });
+
+    it("should return an empty Set when no reviewers are requested", async () => {
+      vi.mocked(mockClient.rest.pulls.listRequestedReviewers).mockResolvedValue({
+        data: { users: [], teams: [] },
+      });
+
+      const result = await prOps.getRequestedReviewerLogins(testRef);
+
+      expect(result).toEqual(new Set());
     });
   });
 });
