@@ -53,6 +53,12 @@ export interface MergeReadyConfig {
   minApprovals: number;
 }
 
+// ── Review Requests Config ──────────────────────────────────────────────
+
+export interface ReviewRequestsConfig {
+  count: number;
+}
+
 // ── Automerge Config ────────────────────────────────────────────────────
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -165,6 +171,7 @@ export interface RepoConfigFile {
       intake?: unknown;
       mergeReady?: unknown;
       automerge?: unknown;
+      reviewRequests?: unknown;
     };
   };
   standup?: {
@@ -185,6 +192,7 @@ export interface PRConfig {
   intake: IntakeMethod[];
   mergeReady: MergeReadyConfig | null;
   automerge: AutomergeConfig | null;
+  reviewRequests: ReviewRequestsConfig | null;
 }
 
 /**
@@ -959,6 +967,62 @@ function parseMergeReadyConfig(
 }
 
 /**
+ * Parse and validate reviewRequests config from the pr section.
+ *
+ * Returns null (feature disabled) when:
+ * - reviewRequests is absent, null, or undefined
+ * - trustedReviewers is empty
+ * - reviewRequests is not a valid object
+ *
+ * count is clamped to [1, trustedReviewers.length].
+ */
+function parseReviewRequestsConfig(
+  value: unknown,
+  trustedReviewers: string[],
+  repoFullName: string
+): ReviewRequestsConfig | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    logger.warn(
+      `[${repoFullName}] Invalid reviewRequests: expected object. Disabling feature.`
+    );
+    return null;
+  }
+
+  if (trustedReviewers.length === 0) {
+    logger.warn(
+      `[${repoFullName}] reviewRequests configured but trustedReviewers is empty. Disabling feature.`
+    );
+    return null;
+  }
+
+  const obj = value as { count?: unknown };
+
+  let count: number;
+  if (obj.count === undefined || obj.count === null) {
+    count = CONFIG_BOUNDS.reviewRequests.count.default;
+  } else if (typeof obj.count !== "number" || !Number.isFinite(obj.count)) {
+    logger.warn(
+      `[${repoFullName}] Invalid reviewRequests.count: expected number. Using default (${CONFIG_BOUNDS.reviewRequests.count.default}).`
+    );
+    count = CONFIG_BOUNDS.reviewRequests.count.default;
+  } else {
+    count = Math.round(obj.count);
+  }
+
+  count = clamp(
+    count,
+    CONFIG_BOUNDS.reviewRequests.count.min,
+    Math.min(CONFIG_BOUNDS.reviewRequests.count.max, trustedReviewers.length)
+  );
+
+  return { count };
+}
+
+/**
  * Parse and validate auto-gather config.
  * Opt-in feature — disabled by default.
  * When enabled, auto-gather triggers on discussion-phase issues after N new comments.
@@ -1356,6 +1420,7 @@ function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
     const intake = parseIntakeMethods(prConfigRaw?.intake, trustedReviewers, repoFullName);
     const mergeReady = parseMergeReadyConfig(prConfigRaw?.mergeReady, trustedReviewers, repoFullName);
     const automerge = parseAutomergeConfig(prConfigRaw?.automerge, trustedReviewers, repoFullName);
+    const reviewRequests = parseReviewRequestsConfig(prConfigRaw?.reviewRequests, trustedReviewers, repoFullName);
     pr = {
       // Stale PR cleanup is opt-in per repo: omit staleDays (or set it to null) to disable it.
       staleDays:
@@ -1367,6 +1432,7 @@ function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
       intake,
       mergeReady,
       automerge,
+      reviewRequests,
     };
   }
 

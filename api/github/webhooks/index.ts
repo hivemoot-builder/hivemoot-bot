@@ -26,6 +26,7 @@ import { validateEnv, getAppId } from "../../lib/env-validation.js";
 import {
   processImplementationIntake,
   recalculateLeaderboardForPR,
+  autoRequestTrustedReviewers,
 } from "../../lib/implementation-intake.js";
 import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible } from "../../lib/commands/index.js";
 import { getLLMReadiness } from "../../lib/llm/provider.js";
@@ -215,6 +216,7 @@ export function app(probotApp: Probot): void {
           maxPRsPerIssue: repoConfig.governance.pr.maxPRsPerIssue,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
           intake: repoConfig.governance.pr.intake,
+          reviewRequests: repoConfig.governance.pr.reviewRequests,
         });
 
         await evaluateAutomerge({
@@ -313,6 +315,7 @@ export function app(probotApp: Probot): void {
           maxPRsPerIssue: repoConfig.governance.pr.maxPRsPerIssue,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
           intake: repoConfig.governance.pr.intake,
+          reviewRequests: repoConfig.governance.pr.reviewRequests,
         });
 
         await evaluateAutomerge({
@@ -380,6 +383,21 @@ export function app(probotApp: Probot): void {
           log: context.log,
           graphql: context.octokit,
         });
+
+        if (
+          repoConfig.governance.pr.reviewRequests &&
+          currentLabels?.some(l => l === "hivemoot:candidate")
+        ) {
+          const prAuthor = context.payload.pull_request.user?.login ?? "";
+          await autoRequestTrustedReviewers({
+            prs,
+            ref: prRef,
+            prAuthor,
+            trustedReviewers: repoConfig.governance.pr.trustedReviewers,
+            count: repoConfig.governance.pr.reviewRequests.count,
+            log: context.log,
+          });
+        }
       }
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process ready_for_review");
@@ -497,6 +515,7 @@ export function app(probotApp: Probot): void {
           maxPRsPerIssue: repoConfig.governance.pr.maxPRsPerIssue,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
           intake: repoConfig.governance.pr.intake,
+          reviewRequests: repoConfig.governance.pr.reviewRequests,
           editedAt: new Date(context.payload.pull_request.updated_at),
         });
       }
@@ -603,6 +622,7 @@ export function app(probotApp: Probot): void {
           maxPRsPerIssue: repoConfig.governance.pr.maxPRsPerIssue,
           trustedReviewers: repoConfig.governance.pr.trustedReviewers,
           intake: repoConfig.governance.pr.intake,
+          reviewRequests: repoConfig.governance.pr.reviewRequests,
         });
       }
     } catch (error) {
@@ -719,6 +739,7 @@ export function app(probotApp: Probot): void {
             maxPRsPerIssue: repoConfig.governance.pr.maxPRsPerIssue,
             trustedReviewers: repoConfig.governance.pr.trustedReviewers,
             intake: repoConfig.governance.pr.intake,
+            reviewRequests: repoConfig.governance.pr.reviewRequests,
           });
         }
 

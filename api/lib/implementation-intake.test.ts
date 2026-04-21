@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LABELS } from "../config.js";
-import { processImplementationIntake, recalculateLeaderboardForPR } from "./implementation-intake.js";
+import { processImplementationIntake, recalculateLeaderboardForPR, autoRequestTrustedReviewers } from "./implementation-intake.js";
 import type { LinkedIssue } from "./types.js";
 
 // Mock env-validation
@@ -1421,5 +1421,278 @@ describe("Leaderboard race condition fix", () => {
       .join("\n")
       .match(/#101/g) ?? [];
     expect(entries.length).toBe(1);
+  });
+});
+
+describe("autoRequestTrustedReviewers", () => {
+  const makeRef = () => ({ owner: "hivemoot", repo: "colony", prNumber: 101 });
+
+  const makePrs = (requestedLogins: string[] = []) => ({
+    getRequestedReviewerLogins: vi.fn().mockResolvedValue(new Set(requestedLogins)),
+    requestReviewers: vi.fn().mockResolvedValue(undefined),
+  });
+
+  const makeLog = () => ({ info: vi.fn(), warn: vi.fn() });
+
+  it("requests the configured count of trusted reviewers", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice", "bob", "carol"],
+      count: 2,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["alice", "bob"]);
+  });
+
+  it("excludes the PR author from requests", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "alice",
+      trustedReviewers: ["alice", "bob", "carol"],
+      count: 2,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["bob", "carol"]);
+  });
+
+  it("excludes already-requested reviewers", async () => {
+    const prs = makePrs(["alice"]);
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice", "bob", "carol"],
+      count: 2,
+      log: makeLog(),
+    });
+    // alice is already requested; only bob needed to reach 2 trusted requests
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["bob"]);
+  });
+
+  it("skips entirely when count trusted requests already present", async () => {
+    const prs = makePrs(["alice", "bob"]);
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice", "bob"],
+      count: 2,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("skips when no eligible reviewers remain", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "alice",
+      trustedReviewers: ["alice"],
+      count: 1,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("skips when trustedReviewers is empty", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: [],
+      count: 2,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).not.toHaveBeenCalled();
+    expect(prs.getRequestedReviewerLogins).not.toHaveBeenCalled();
+  });
+
+  it("caps requests at available eligible reviewers", async () => {
+    const prs = makePrs();
+    await autoRequestTrustedReviewers({
+      prs: prs as never,
+      ref: makeRef(),
+      prAuthor: "author",
+      trustedReviewers: ["alice"],
+      count: 3,
+      log: makeLog(),
+    });
+    expect(prs.requestReviewers).toHaveBeenCalledWith(makeRef(), ["alice"]);
+  });
+
+  it("requests reviewers after intake labels candidate PR when reviewRequests configured", async () => {
+    const readyIssue: LinkedIssue = {
+      number: 7,
+      title: "Ready issue",
+      state: "OPEN",
+      labels: { nodes: [{ name: LABELS.READY_TO_IMPLEMENT }] },
+    };
+
+    vi.mocked(getLinkedIssues).mockResolvedValue([readyIssue]);
+
+    const issues = {
+      getLabelAddedTime: vi.fn().mockResolvedValue(new Date("2026-02-01T00:00:00Z")),
+      comment: vi.fn().mockResolvedValue(undefined),
+      hasNotificationComment: vi.fn().mockResolvedValue(false),
+    };
+
+    const requestReviewers = vi.fn().mockResolvedValue(undefined);
+    const getRequestedReviewerLogins = vi.fn().mockResolvedValue(new Set<string>());
+
+    const prs = {
+      get: vi.fn().mockResolvedValue({
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        author: "pr-author",
+        draft: false,
+      }),
+      getLabels: vi.fn().mockResolvedValue([]),
+      getLatestAuthorActivityDate: vi.fn().mockResolvedValue(new Date("2026-02-02T00:00:00Z")),
+      findPRsWithLabel: vi.fn().mockResolvedValue([]),
+      addLabels: vi.fn().mockResolvedValue(undefined),
+      comment: vi.fn().mockResolvedValue(undefined),
+      hasNotificationComment: vi.fn().mockResolvedValue(false),
+      requestReviewers,
+      getRequestedReviewerLogins,
+    };
+
+    const mockOctokit = {
+      rest: {
+        issues: {
+          get: vi.fn().mockResolvedValue({ data: { labels: [] } }),
+          addLabels: vi.fn().mockResolvedValue({}),
+          removeLabel: vi.fn().mockResolvedValue({}),
+          createComment: vi.fn().mockResolvedValue({ data: { id: 1 } }),
+          updateComment: vi.fn().mockResolvedValue({}),
+          listComments: vi.fn().mockResolvedValue({ data: [] }),
+          listForRepo: vi.fn().mockResolvedValue({ data: [] }),
+        },
+        pulls: {
+          get: vi.fn().mockResolvedValue({ data: { number: 101, state: "open", merged: false, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z", user: { login: "pr-author" }, head: { sha: "abc" } } }),
+          update: vi.fn().mockResolvedValue({}),
+          listReviews: vi.fn().mockResolvedValue({ data: [] }),
+          listCommits: vi.fn().mockResolvedValue({ data: [] }),
+          listFiles: vi.fn().mockResolvedValue({ data: [] }),
+          listReviewComments: vi.fn().mockResolvedValue({ data: [] }),
+        },
+        checks: { listForRef: vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } }) },
+        repos: { getCombinedStatusForRef: vi.fn().mockResolvedValue({ data: { state: "pending", total_count: 0, statuses: [] } }) },
+      },
+      graphql: vi.fn(),
+      paginate: {
+        iterator: vi.fn().mockReturnValue({
+          async *[Symbol.asyncIterator]() { yield { data: [] }; },
+        }),
+      },
+    };
+
+    await processImplementationIntake({
+      octokit: mockOctokit as never,
+      issues: issues as never,
+      prs: prs as never,
+      log: { info: vi.fn(), warn: vi.fn() },
+      owner: "hivemoot",
+      repo: "colony",
+      prNumber: 101,
+      linkedIssues: [readyIssue],
+      trigger: "opened",
+      maxPRsPerIssue: 3,
+      trustedReviewers: ["alice", "bob"],
+      reviewRequests: { count: 1 },
+    });
+
+    expect(requestReviewers).toHaveBeenCalledWith(
+      { owner: "hivemoot", repo: "colony", prNumber: 101 },
+      ["alice"]
+    );
+  });
+
+  it("skips reviewer requests when PR is a draft", async () => {
+    const readyIssue: LinkedIssue = {
+      number: 7,
+      title: "Ready issue",
+      state: "OPEN",
+      labels: { nodes: [{ name: LABELS.READY_TO_IMPLEMENT }] },
+    };
+
+    vi.mocked(getLinkedIssues).mockResolvedValue([readyIssue]);
+
+    const issues = {
+      getLabelAddedTime: vi.fn().mockResolvedValue(new Date("2026-02-01T00:00:00Z")),
+      comment: vi.fn().mockResolvedValue(undefined),
+      hasNotificationComment: vi.fn().mockResolvedValue(false),
+    };
+
+    const requestReviewers = vi.fn().mockResolvedValue(undefined);
+    const getRequestedReviewerLogins = vi.fn().mockResolvedValue(new Set<string>());
+
+    const prs = {
+      get: vi.fn().mockResolvedValue({
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        author: "pr-author",
+        draft: true,
+      }),
+      getLabels: vi.fn().mockResolvedValue([]),
+      getLatestAuthorActivityDate: vi.fn().mockResolvedValue(new Date("2026-02-02T00:00:00Z")),
+      findPRsWithLabel: vi.fn().mockResolvedValue([]),
+      addLabels: vi.fn().mockResolvedValue(undefined),
+      comment: vi.fn().mockResolvedValue(undefined),
+      hasNotificationComment: vi.fn().mockResolvedValue(false),
+      requestReviewers,
+      getRequestedReviewerLogins,
+    };
+
+    const mockOctokit = {
+      rest: {
+        issues: {
+          get: vi.fn().mockResolvedValue({ data: { labels: [] } }),
+          addLabels: vi.fn().mockResolvedValue({}),
+          removeLabel: vi.fn().mockResolvedValue({}),
+          createComment: vi.fn().mockResolvedValue({ data: { id: 1 } }),
+          updateComment: vi.fn().mockResolvedValue({}),
+          listComments: vi.fn().mockResolvedValue({ data: [] }),
+          listForRepo: vi.fn().mockResolvedValue({ data: [] }),
+        },
+        pulls: {
+          get: vi.fn().mockResolvedValue({ data: { number: 101, state: "open", merged: false, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z", user: { login: "pr-author" }, head: { sha: "abc" } } }),
+          update: vi.fn().mockResolvedValue({}),
+          listReviews: vi.fn().mockResolvedValue({ data: [] }),
+          listCommits: vi.fn().mockResolvedValue({ data: [] }),
+          listFiles: vi.fn().mockResolvedValue({ data: [] }),
+          listReviewComments: vi.fn().mockResolvedValue({ data: [] }),
+        },
+        checks: { listForRef: vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } }) },
+        repos: { getCombinedStatusForRef: vi.fn().mockResolvedValue({ data: { state: "pending", total_count: 0, statuses: [] } }) },
+      },
+      graphql: vi.fn(),
+      paginate: {
+        iterator: vi.fn().mockReturnValue({
+          async *[Symbol.asyncIterator]() { yield { data: [] }; },
+        }),
+      },
+    };
+
+    await processImplementationIntake({
+      octokit: mockOctokit as never,
+      issues: issues as never,
+      prs: prs as never,
+      log: { info: vi.fn(), warn: vi.fn() },
+      owner: "hivemoot",
+      repo: "colony",
+      prNumber: 101,
+      linkedIssues: [readyIssue],
+      trigger: "opened",
+      maxPRsPerIssue: 3,
+      trustedReviewers: ["alice", "bob"],
+      reviewRequests: { count: 1 },
+    });
+
+    expect(requestReviewers).not.toHaveBeenCalled();
   });
 });

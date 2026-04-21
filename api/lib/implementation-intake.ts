@@ -21,7 +21,7 @@ import {
   getLinkedIssues,
   type GraphQLClient,
 } from "./graphql-queries.js";
-import type { IntakeMethod } from "./repo-config.js";
+import type { IntakeMethod, ReviewRequestsConfig } from "./repo-config.js";
 import type { LinkedIssue, PRWithApprovals, PullRequest } from "./types.js";
 import { filterByLabel, hasLabel } from "./types.js";
 import { getAppId } from "./env-validation.js";
@@ -234,6 +234,47 @@ async function fetchApprovalScores(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Request up to `count` trusted reviewers on a candidate PR.
+ *
+ * Skips reviewers already requested, excludes the PR author, and short-circuits
+ * when enough trusted reviewers are already requested.
+ */
+export async function autoRequestTrustedReviewers(params: {
+  prs: ReturnType<typeof createPROperations>;
+  ref: { owner: string; repo: string; prNumber: number };
+  prAuthor: string;
+  trustedReviewers: string[];
+  count: number;
+  log: { info: (msg: string) => void; warn: (msg: string) => void };
+}): Promise<void> {
+  const { prs, ref, prAuthor, trustedReviewers, count, log } = params;
+
+  if (trustedReviewers.length === 0 || count <= 0) {
+    return;
+  }
+
+  const alreadyRequested = await prs.getRequestedReviewerLogins(ref);
+
+  const trustedAlreadyRequested = trustedReviewers.filter(r => alreadyRequested.has(r)).length;
+  const remaining = count - trustedAlreadyRequested;
+  if (remaining <= 0) {
+    log.info(`PR #${ref.prNumber}: ${trustedAlreadyRequested} trusted reviewer request(s) already present; skipping`);
+    return;
+  }
+
+  const eligible = trustedReviewers.filter(r => r !== prAuthor && !alreadyRequested.has(r));
+  const toRequest = eligible.slice(0, remaining);
+
+  if (toRequest.length === 0) {
+    log.info(`PR #${ref.prNumber}: no eligible trusted reviewers available to request`);
+    return;
+  }
+
+  log.info(`PR #${ref.prNumber}: requesting ${toRequest.length} trusted reviewer(s): ${toRequest.join(", ")}`);
+  await prs.requestReviewers(ref, toRequest);
+}
+
+/**
  * Intake a PR as an implementation when it becomes eligible.
  *
  * Eligibility rules:
@@ -254,6 +295,7 @@ export async function processImplementationIntake(params: {
   maxPRsPerIssue: number;
   trustedReviewers?: string[];
   intake?: IntakeMethod[];
+  reviewRequests?: ReviewRequestsConfig | null;
   /** Timestamp of a PR body edit, used as an activation signal by the edited webhook. */
   editedAt?: Date;
 }): Promise<void> {
@@ -396,6 +438,17 @@ export async function processImplementationIntake(params: {
 
     await prs.addLabels(prRef, [LABELS.IMPLEMENTATION]);
     await recalculateLeaderboardForPR(octokit, log, owner, repo, prNumber);
+
+    if (params.reviewRequests && !prDetails.draft) {
+      await autoRequestTrustedReviewers({
+        prs,
+        ref: prRef,
+        prAuthor: prDetails.author,
+        trustedReviewers: params.trustedReviewers ?? [],
+        count: params.reviewRequests.count,
+        log,
+      });
+    }
 
     if (!welcomed) {
       const alreadyWelcomed = await prs.hasNotificationComment(

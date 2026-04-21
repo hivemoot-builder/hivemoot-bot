@@ -99,6 +99,24 @@ export interface PRClient {
           status: string;
         }>;
       }>;
+
+      requestReviewers: (params: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+        reviewers: string[];
+      }) => Promise<unknown>;
+
+      listRequestedReviewers: (params: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+      }) => Promise<{
+        data: {
+          users: Array<{ login: string }>;
+          teams: Array<{ slug: string }>;
+        };
+      }>;
     };
     issues: {
       get: (params: {
@@ -831,5 +849,24 @@ export class PROperations {
     }
 
     return false;
+  }
+
+  async requestReviewers(ref: PRRef, reviewers: string[]): Promise<void> {
+    if (reviewers.length === 0) return;
+    await this.client.rest.pulls.requestReviewers({
+      owner: ref.owner,
+      repo: ref.repo,
+      pull_number: ref.prNumber,
+      reviewers,
+    });
+  }
+
+  async getRequestedReviewerLogins(ref: PRRef): Promise<Set<string>> {
+    const { data } = await this.client.rest.pulls.listRequestedReviewers({
+      owner: ref.owner,
+      repo: ref.repo,
+      pull_number: ref.prNumber,
+    });
+    return new Set(data.users.map((u) => u.login));
   }
 }
